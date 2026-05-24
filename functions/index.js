@@ -1,8 +1,10 @@
 const { onRequest } = require("firebase-functions/v2/https");
-const logger = require("firebase-functions/logger");
+const OpenAI = require("openai");
 
-// 배포 예시 함수 (주석 해제 후 firebase deploy --only functions 실행)
-// exports.helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", { structuredData: true });
-//   response.send("Hello from Firebase!");
-// });
+// OpenAI 인스턴스 초기화 (자동으로 .env의 OPENAI_API_KEY를 가져옵니다)
+const openai = new OpenAI();
+
+// 테스트용 임시 함수
+exports.testAI = onRequest((req, res) => {
+  res.send("비밀 금고에 AI 두뇌 탑재 완료!");
+});

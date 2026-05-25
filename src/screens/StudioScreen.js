@@ -368,7 +368,7 @@ export default function StudioScreen({ route }) {
                   source={{ uri: videoUrl }}
                   style={styles.videoPlayer}
                   useNativeControls
-                  resizeMode={ResizeMode.CONTAIN}
+                  resizeMode={ResizeMode.COVER}
                   shouldPlay={false}
                 />
                 <Text style={styles.videoHint}>네이티브 컨트롤로 재생·정지·탐색</Text>

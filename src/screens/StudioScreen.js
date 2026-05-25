@@ -1,26 +1,45 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Button,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { httpsCallable } from 'firebase/functions';
-import { functions } from '../services/firebase';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { functions, db } from '../services/firebase';
 
 const generateGreetingFn = httpsCallable(functions, 'generateGreeting');
 
 export default function StudioScreen() {
+  const [creators, setCreators] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   const [name, setName] = useState('');
   const [persona, setPersona] = useState('');
   const [greeting, setGreeting] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'creators'), (snapshot) => {
+      setCreators(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+    });
+    return unsubscribe;
+  }, []);
+
+  const handleSelectCreator = (creator) => {
+    setSelectedId(creator.id);
+    setName(creator.name);
+    setPersona(creator.persona);
+    setGreeting('');
+  };
 
   const handleGenerate = async () => {
     if (!name.trim() || !persona.trim()) {
@@ -48,20 +67,51 @@ export default function StudioScreen() {
     >
       <ScrollView contentContainerStyle={styles.inner} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>🎬 AI 영상 스튜디오</Text>
-        <Text style={styles.subtitle}>크리에이터 정보를 입력하면 AI가 인사말 대본을 생성합니다.</Text>
+        <Text style={styles.subtitle}>크리에이터를 선택하거나 직접 입력하여 AI 인사말을 생성하세요.</Text>
+
+        {creators.length > 0 && (
+          <View style={styles.chipSection}>
+            <Text style={styles.chipLabel}>소속 크리에이터</Text>
+            <FlatList
+              data={creators}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chipList}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.chip,
+                    selectedId === item.id && styles.chipSelected,
+                  ]}
+                  onPress={() => handleSelectCreator(item)}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      selectedId === item.id && styles.chipTextSelected,
+                    ]}
+                  >
+                    {item.name}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        )}
 
         <View style={styles.form}>
           <TextInput
             style={styles.input}
             placeholder="크리에이터 이름"
             value={name}
-            onChangeText={setName}
+            onChangeText={(text) => { setName(text); setSelectedId(null); }}
           />
           <TextInput
             style={[styles.input, styles.inputMulti]}
             placeholder="성격 / 특징"
             value={persona}
-            onChangeText={setPersona}
+            onChangeText={(text) => { setPersona(text); setSelectedId(null); }}
             multiline
           />
           <Button
@@ -111,6 +161,39 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     textAlign: 'center',
     marginBottom: 20,
+  },
+  chipSection: {
+    marginBottom: 16,
+  },
+  chipLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#7C3AED',
+    marginBottom: 8,
+  },
+  chipList: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  chip: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#EDE9FE',
+    borderWidth: 1,
+    borderColor: '#C4B5FD',
+  },
+  chipSelected: {
+    backgroundColor: '#7C3AED',
+    borderColor: '#7C3AED',
+  },
+  chipText: {
+    fontSize: 14,
+    color: '#7C3AED',
+    fontWeight: '500',
+  },
+  chipTextSelected: {
+    color: '#fff',
   },
   form: {
     backgroundColor: '#fff',

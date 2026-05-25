@@ -24,6 +24,7 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
 const fetchTodayTrendsFn = httpsCallable(functions, 'fetchTodayTrends');
+const generatePersonaDraftFn = httpsCallable(functions, 'generatePersonaDraft');
 
 export default function CreateCreatorScreen({ navigation }) {
   // ── 트렌드 데이터 상태 ──────────────────────────────────────
@@ -39,6 +40,7 @@ export default function CreateCreatorScreen({ navigation }) {
   // ── 직접 입력 모달 상태 ─────────────────────────────────────
   const [modalVisible, setModalVisible] = useState(false);
   const [customInput, setCustomInput] = useState('');
+  const [generatingPersona, setGeneratingPersona] = useState(false);
   const customInputRef = useRef(null);
 
   // ── 3단계 폼 상태 ───────────────────────────────────────────
@@ -106,21 +108,28 @@ export default function CreateCreatorScreen({ navigation }) {
     setTimeout(() => customInputRef.current?.focus(), 200);
   };
 
-  // ── 직접 입력 확정 → STEP 2 건너뛰고 STEP 3으로 ─────────
-  const handleConfirmCustom = () => {
+  // ── 직접 입력 확정 → AI 페르소나 생성 후 STEP 3 자동 채움 ─
+  const handleConfirmCustom = async () => {
     const trimmed = customInput.trim();
     if (!trimmed) {
       Alert.alert('입력 오류', '분야를 입력해주세요.');
       return;
     }
-    setModalVisible(false);
-    // isCustom 플래그로 Step 2를 건너뜀
-    setSelectedCategory({ label: trimmed, icon: '✏️', subs: [], isCustom: true });
-    // sentinel sub: Step 3 폼을 열되 필드는 비워 둠
-    setSelectedSub({ name: '', voice: '', prompt: '', isCustom: true });
-    setCreatorName('');
-    setVoice('');
-    setPrompt('');
+    setGeneratingPersona(true);
+    try {
+      const result = await generatePersonaDraftFn({ field: trimmed });
+      const { name, voice: draftVoice, prompt: draftPrompt } = result.data;
+      setModalVisible(false);
+      setSelectedCategory({ label: trimmed, icon: '✏️', subs: [], isCustom: true });
+      setSelectedSub({ name: '', voice: '', prompt: '', isCustom: true });
+      setCreatorName(name);
+      setVoice(draftVoice);
+      setPrompt(draftPrompt);
+    } catch (e) {
+      Alert.alert('기획안 생성 실패', e.message);
+    } finally {
+      setGeneratingPersona(false);
+    }
   };
 
   // ── 소분류 선택 → 폼 자동 채움 ──────────────────────────
@@ -380,6 +389,7 @@ export default function CreateCreatorScreen({ navigation }) {
                   <TouchableOpacity
                     style={[styles.modalBtn, styles.modalCancelBtn]}
                     onPress={() => setModalVisible(false)}
+                    disabled={generatingPersona}
                   >
                     <Text style={styles.modalCancelText}>취소</Text>
                   </TouchableOpacity>
@@ -387,12 +397,16 @@ export default function CreateCreatorScreen({ navigation }) {
                     style={[
                       styles.modalBtn,
                       styles.modalConfirmBtn,
-                      !customInput.trim() && styles.modalConfirmBtnDisabled,
+                      (!customInput.trim() || generatingPersona) && styles.modalConfirmBtnDisabled,
                     ]}
                     onPress={handleConfirmCustom}
-                    disabled={!customInput.trim()}
+                    disabled={!customInput.trim() || generatingPersona}
                   >
-                    <Text style={styles.modalConfirmText}>생성 →</Text>
+                    {generatingPersona ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.modalConfirmText}>기획안 생성</Text>
+                    )}
                   </TouchableOpacity>
                 </View>
               </View>

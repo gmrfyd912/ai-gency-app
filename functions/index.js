@@ -122,3 +122,45 @@ exports.fetchTodayTrends = onCall(
     }
   }
 );
+
+// ────────────────────────────────────────────────────────────
+// 직접 입력 분야 기반 AI 페르소나 초안 생성
+// ────────────────────────────────────────────────────────────
+exports.generatePersonaDraft = onCall(async (request) => {
+  const openai = new OpenAI();
+  const { field } = request.data;
+
+  if (!field) {
+    throw new HttpsError("invalid-argument", "field는 필수입니다.");
+  }
+
+  const userPrompt = `"${field}" 분야의 AI 가상 크리에이터를 기획해주세요.
+반드시 유효한 JSON만 반환하고 다른 텍스트는 포함하지 마세요.
+
+{
+  "name": "크리에이터 이름 (한국어, 12자 이내, 캐릭터성 있게)",
+  "voice": "목소리 톤과 전달 스타일 (20자 이내, 예: 친근하고 유쾌한 언니 톤)",
+  "prompt": "이 크리에이터의 페르소나 성격 설명 (2~3문장, 시청자에게 주는 가치 포함)"
+}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: userPrompt }],
+      temperature: 0.9,
+    });
+
+    const parsed = JSON.parse(completion.choices[0].message.content);
+
+    if (!parsed.name || !parsed.voice || !parsed.prompt) {
+      throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
+    }
+
+    return { name: parsed.name, voice: parsed.voice, prompt: parsed.prompt };
+  } catch (error) {
+    console.error("페르소나 생성 오류:", error);
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", `페르소나 생성 실패: ${error.message}`);
+  }
+});

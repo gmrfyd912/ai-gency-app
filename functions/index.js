@@ -198,17 +198,19 @@ exports.generateSceneImage = onCall(
     const enhancedPrompt = `Cinematic short-form social media video frame. ${visualPrompt} High quality, vibrant colors, vertical smartphone video style, professional lighting.`;
 
     try {
+      // DALL-E 3 전용 이미지 생성 엔드포인트 (chat.completions 아님)
       const response = await openai.images.generate({
         model: "dall-e-3",
         prompt: enhancedPrompt,
         n: 1,
         size: "1024x1792",
-        quality: "standard",
       });
 
-      return { imageUrl: response.data[0].url };
+      const imageUrl = response.data[0].url;
+      return { imageUrl };
     } catch (error) {
       console.error("이미지 생성 오류:", error);
+      console.error("상세:", JSON.stringify(error?.error ?? error?.message));
       if (error instanceof HttpsError) throw error;
       throw new HttpsError("internal", `이미지 생성 실패: ${error.message}`);
     }

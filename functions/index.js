@@ -190,15 +190,15 @@ exports.generateContent = onCall(async (request) => {
 });
 
 // ────────────────────────────────────────────────────────────
-// 씬 연출 지시문 → DALL-E 3 이미지 생성 (raw fetch — SDK 우회)
+// 씬 연출 지시문 → gpt-image-2 이미지 생성 → Firebase Storage 업로드
 // ────────────────────────────────────────────────────────────
 exports.generateSceneImage = onCall(
   { timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
-    const { visualPrompt } = request.data;
+    const { visualPrompt, creatorId, episodeId, sceneIndex } = request.data;
 
-    if (!visualPrompt) {
-      throw new HttpsError("invalid-argument", "visualPrompt는 필수입니다.");
+    if (!visualPrompt || !creatorId || !episodeId || sceneIndex == null) {
+      throw new HttpsError("invalid-argument", "visualPrompt, creatorId, episodeId, sceneIndex는 필수입니다.");
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -207,22 +207,16 @@ exports.generateSceneImage = onCall(
     }
 
     const enhancedPrompt = `Cinematic short-form social media video frame. ${visualPrompt} High quality, vibrant colors, vertical smartphone video style, professional lighting.`;
-
-    console.log("[generateSceneImage] 호출 시작, prompt 길이:", enhancedPrompt.length);
+    console.log("[generateSceneImage] 시작, sceneIndex:", sceneIndex);
 
     let res;
     try {
-      // OpenAI SDK를 완전히 우회 — REST API 직접 호출
       res = await fetch("https://api.openai.com/v1/images/generations", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        // gpt-image-2 공식 스펙 파라미터만 사용
-        // - response_format: gpt-image-2 미지원 (DALL-E 2/3 전용) → 제거
-        // - output_format: 이미지 파일 포맷 (jpeg가 가장 작음)
-        // - quality: "low"로 페이로드 최소화
         body: JSON.stringify({
           model: "gpt-image-2",
           prompt: enhancedPrompt,
@@ -233,35 +227,34 @@ exports.generateSceneImage = onCall(
         }),
       });
     } catch (networkError) {
-      console.error("[generateSceneImage] 네트워크 오류:", networkError.message);
       throw new HttpsError("internal", `네트워크 오류: ${networkError.message}`);
     }
 
     const data = await res.json();
-
-    // 키 구조만 로깅 — Base64 본문은 절대 로깅하지 않음
     console.log("[OpenAI Response] Keys:", Object.keys(data));
-    if (Array.isArray(data?.data)) {
-      console.log("[OpenAI Response] data[0] Keys:", Object.keys(data.data[0] ?? {}));
-    }
 
     if (!res.ok) {
       const msg = data?.error?.message ?? `HTTP ${res.status}`;
-      console.error("[generateSceneImage] API 오류:", msg);
       throw new HttpsError("internal", `이미지 생성 실패: ${msg}`);
     }
 
-    // gpt-image-2는 항상 b64_json 반환 (URL 방식 없음)
     const b64 = data?.data?.[0]?.b64_json;
     if (!b64) {
-      console.error("[generateSceneImage] b64_json 없음, data[0] Keys:",
-        Object.keys(data?.data?.[0] ?? {}));
-      throw new HttpsError("internal", "이미지 데이터를 받지 못했습니다. 서버 로그를 확인하세요.");
+      throw new HttpsError("internal", "이미지 데이터를 받지 못했습니다.");
     }
 
-    // Data URI로 변환 → React Native Image 컴포넌트에서 직접 렌더링 가능
-    const imageUrl = `data:image/jpeg;base64,${b64}`;
-    console.log("[generateSceneImage] 성공, base64 길이:", b64.length);
+    // Base64 → Buffer → Firebase Storage 업로드
+    const imgBuffer = Buffer.from(b64, "base64");
+    const storagePath = `creators/${creatorId}/episodes/${episodeId}/scene_${sceneIndex}.jpg`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(storagePath);
+    await file.save(imgBuffer, { contentType: "image/jpeg" });
+    const [imageUrl] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
+    });
+
+    console.log("[generateSceneImage] Storage 업로드 완료:", storagePath);
     return { imageUrl };
   }
 );
@@ -321,21 +314,26 @@ exports.generateFinalVideo = onCall(
       });
 
     try {
-      // ── 각 씬: 이미지·오디오 파일 저장 + 개별 클립 생성 ─────
+      // ── 각 씬: Storage URL에서 파일 다운로드 + 개별 클립 생성 ─
       const clipPaths = [];
       for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
-
-        const imgBase64   = scene.imageUri.replace(/^data:[^;]+;base64,/, "");
-        const audioBase64 = scene.audioUri.replace(/^data:[^;]+;base64,/, "");
 
         const imgPath   = path.join(tmpDir, `img_${sessionId}_${i}.jpg`);
         const audioPath = path.join(tmpDir, `audio_${sessionId}_${i}.mp3`);
         const clipPath  = path.join(tmpDir, `clip_${sessionId}_${i}.mp4`);
         tmpFiles.push(imgPath, audioPath, clipPath);
 
-        fs.writeFileSync(imgPath,   Buffer.from(imgBase64,   "base64"));
-        fs.writeFileSync(audioPath, Buffer.from(audioBase64, "base64"));
+        // Storage URL(signed URL 또는 공개 URL)에서 직접 다운로드
+        const [imgRes, audioRes] = await Promise.all([
+          fetch(scene.imageUri),
+          fetch(scene.audioUri),
+        ]);
+        if (!imgRes.ok)   throw new Error(`이미지 다운로드 실패 (씬 ${i + 1}): HTTP ${imgRes.status}`);
+        if (!audioRes.ok) throw new Error(`오디오 다운로드 실패 (씬 ${i + 1}): HTTP ${audioRes.status}`);
+
+        fs.writeFileSync(imgPath,   Buffer.from(await imgRes.arrayBuffer()));
+        fs.writeFileSync(audioPath, Buffer.from(await audioRes.arrayBuffer()));
 
         await runFfmpeg(
           ffmpeg()
@@ -401,22 +399,21 @@ exports.generateFinalVideo = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// 씬 대사 → OpenAI TTS 오디오 생성 (Base64 MP3)
+// 씬 대사 → OpenAI TTS 오디오 생성 → Firebase Storage 업로드
 // ────────────────────────────────────────────────────────────
 exports.generateSceneAudio = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     const openai = new OpenAI();
-    const { dialogue, voice } = request.data;
+    const { dialogue, voice, creatorId, episodeId, sceneIndex } = request.data;
 
-    if (!dialogue) {
-      throw new HttpsError("invalid-argument", "dialogue는 필수입니다.");
+    if (!dialogue || !creatorId || !episodeId || sceneIndex == null) {
+      throw new HttpsError("invalid-argument", "dialogue, creatorId, episodeId, sceneIndex는 필수입니다.");
     }
 
     const VALID_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
     const selectedVoice = VALID_VOICES.includes(voice) ? voice : "nova";
-
-    console.log("[generateSceneAudio] voice:", selectedVoice, "길이:", dialogue.length);
+    console.log("[generateSceneAudio] voice:", selectedVoice, "sceneIndex:", sceneIndex);
 
     try {
       const mp3 = await openai.audio.speech.create({
@@ -426,9 +423,19 @@ exports.generateSceneAudio = onCall(
       });
 
       const buffer = Buffer.from(await mp3.arrayBuffer());
-      const base64 = buffer.toString("base64");
-      console.log("[generateSceneAudio] 성공, base64 길이:", base64.length);
-      return { audioUri: `data:audio/mp3;base64,${base64}` };
+
+      // Buffer → Firebase Storage 업로드
+      const storagePath = `creators/${creatorId}/episodes/${episodeId}/scene_${sceneIndex}.mp3`;
+      const bucket = admin.storage().bucket();
+      const file = bucket.file(storagePath);
+      await file.save(buffer, { contentType: "audio/mpeg" });
+      const [audioUri] = await file.getSignedUrl({
+        action: "read",
+        expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
+      });
+
+      console.log("[generateSceneAudio] Storage 업로드 완료:", storagePath);
+      return { audioUri };
     } catch (error) {
       console.error("[generateSceneAudio] 오류:", error.message);
       if (error instanceof HttpsError) throw error;

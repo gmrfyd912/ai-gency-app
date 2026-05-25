@@ -172,7 +172,12 @@ export default function StudioScreen({ route }) {
   const handleRenderScene = async (idx, direction) => {
     setSceneLoadingIdx(idx);
     try {
-      const result = await generateSceneImageFn({ visualPrompt: direction });
+      const result = await generateSceneImageFn({
+        visualPrompt: direction,
+        creatorId: creator.id,
+        episodeId: currentEpisodeId,
+        sceneIndex: idx,
+      });
       const imageUrl = result.data.imageUrl;
       setSceneImages((prev) => ({ ...prev, [idx]: imageUrl }));
       await persistScenes({ imageIdx: idx, imageUri: imageUrl });
@@ -187,7 +192,13 @@ export default function StudioScreen({ route }) {
   const handleDubScene = async (idx, dialogue) => {
     setAudioDubbingIdx(idx);
     try {
-      const result = await generateSceneAudioFn({ dialogue, voice: 'nova' });
+      const result = await generateSceneAudioFn({
+        dialogue,
+        voice: 'nova',
+        creatorId: creator.id,
+        episodeId: currentEpisodeId,
+        sceneIndex: idx,
+      });
       const audioUri = result.data.audioUri;
       setSceneAudios((prev) => ({ ...prev, [idx]: audioUri }));
       await persistScenes({ audioIdx: idx, audioUri });

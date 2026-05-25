@@ -182,6 +182,40 @@ exports.generateContent = onCall(async (request) => {
 });
 
 // ────────────────────────────────────────────────────────────
+// 씬 연출 지시문 → DALL-E 3 이미지 생성
+// ────────────────────────────────────────────────────────────
+exports.generateSceneImage = onCall(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const openai = new OpenAI();
+    const { visualPrompt } = request.data;
+
+    if (!visualPrompt) {
+      throw new HttpsError("invalid-argument", "visualPrompt는 필수입니다.");
+    }
+
+    // 숏폼 영상 씬 특화 프롬프트로 강화
+    const enhancedPrompt = `Cinematic short-form social media video frame. ${visualPrompt} High quality, vibrant colors, vertical smartphone video style, professional lighting.`;
+
+    try {
+      const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: enhancedPrompt,
+        n: 1,
+        size: "1024x1792",
+        quality: "standard",
+      });
+
+      return { imageUrl: response.data[0].url };
+    } catch (error) {
+      console.error("이미지 생성 오류:", error);
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", `이미지 생성 실패: ${error.message}`);
+    }
+  }
+);
+
+// ────────────────────────────────────────────────────────────
 // 직접 입력 분야 기반 AI 페르소나 초안 생성
 // ────────────────────────────────────────────────────────────
 exports.generatePersonaDraft = onCall(async (request) => {

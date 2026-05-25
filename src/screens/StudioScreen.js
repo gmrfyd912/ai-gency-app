@@ -2,6 +2,8 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,21 +14,34 @@ import { httpsCallable } from 'firebase/functions';
 import { functions } from '../services/firebase';
 
 const generateContentFn = httpsCallable(functions, 'generateContent');
+// DALL-E 3 생성에 최대 90초 허용
+const generateSceneImageFn = httpsCallable(functions, 'generateSceneImage', {
+  timeout: 90000,
+});
 
-// 장면 번호를 두 자리 문자열로 포맷
 const pad = (n) => String(n).padStart(2, '0');
-
-// 장면 카드 accent 색상 (인덱스 기반 순환)
 const SCENE_COLORS = ['#4A90E2', '#7C3AED', '#059669', '#D97706', '#DC2626'];
 
 export default function StudioScreen({ route }) {
   const { creator } = route.params;
-  const [script, setScript] = useState(null); // { title, scenes }
+
+  const [script, setScript] = useState(null);        // { title, scenes }
   const [generating, setGenerating] = useState(false);
 
+  // 씬별 이미지 상태: { [sceneIdx]: imageUrl }
+  const [sceneImages, setSceneImages] = useState({});
+  // 현재 이미지 생성 중인 씬 인덱스 (null = 없음)
+  const [sceneLoadingIdx, setSceneLoadingIdx] = useState(null);
+
+  // 전체화면 이미지 모달
+  const [modalImageUrl, setModalImageUrl] = useState(null);
+
+  // ── 대본 생성 ────────────────────────────────────────────
   const handleGenerate = async () => {
     setGenerating(true);
     setScript(null);
+    setSceneImages({});
+    setSceneLoadingIdx(null);
     try {
       const result = await generateContentFn({
         name: creator.name,
@@ -40,14 +55,20 @@ export default function StudioScreen({ route }) {
     }
   };
 
-  const handleRenderScene = (sceneNumber) => {
-    Alert.alert(
-      '🎬 장면 렌더링',
-      `[장면 ${sceneNumber}] 비디오 렌더링 서버 연동 준비 중입니다.`,
-      [{ text: '확인' }]
-    );
+  // ── 씬 이미지 생성 (DALL-E 3) ────────────────────────────
+  const handleRenderScene = async (idx, direction) => {
+    setSceneLoadingIdx(idx);
+    try {
+      const result = await generateSceneImageFn({ visualPrompt: direction });
+      setSceneImages((prev) => ({ ...prev, [idx]: result.data.imageUrl }));
+    } catch (e) {
+      Alert.alert('이미지 생성 실패', e.message);
+    } finally {
+      setSceneLoadingIdx(null);
+    }
   };
 
+  // ── 전체 합성 (UI 플로우 준비) ────────────────────────────
   const handleSynthesize = () => {
     Alert.alert(
       '🎥 영상 합성',
@@ -58,15 +79,16 @@ export default function StudioScreen({ route }) {
 
   return (
     <View style={styles.root}>
+
+      {/* ─────────────── 메인 스크롤 영역 ─────────────── */}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
           styles.inner,
-          script && styles.innerWithFooter,
+          script && !generating && styles.innerWithFooter,
         ]}
       >
-
-        {/* ── 크리에이터 프로필 헤더 ── */}
+        {/* ── 크리에이터 프로필 ── */}
         <View style={styles.profileCard}>
           <View style={styles.profileTop}>
             <View style={styles.avatarCircle}>
@@ -108,7 +130,7 @@ export default function StudioScreen({ route }) {
           )}
         </TouchableOpacity>
 
-        {/* ── 생성 중 로딩 ── */}
+        {/* ── 대본 생성 중 로딩 ── */}
         {generating && (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color="#4A90E2" />
@@ -117,9 +139,10 @@ export default function StudioScreen({ route }) {
           </View>
         )}
 
-        {/* ── 대본 제목 카드 ── */}
+        {/* ── 대본 완성 이후 ── */}
         {script && !generating ? (
           <>
+            {/* 대본 제목 카드 */}
             <View style={styles.scriptTitleCard}>
               <View style={styles.scriptTitleRow}>
                 <Text style={styles.scriptTitleLabel}>📋 오늘의 대본</Text>
@@ -131,9 +154,13 @@ export default function StudioScreen({ route }) {
               <Text style={styles.scriptMeta}>총 {script.scenes.length}개 장면</Text>
             </View>
 
-            {/* ── 씬 카드 목록 ── */}
+            {/* 씬 카드 목록 */}
             {script.scenes.map((scene, idx) => {
               const accentColor = SCENE_COLORS[idx % SCENE_COLORS.length];
+              const imageUrl = sceneImages[idx];
+              const isLoadingThis = sceneLoadingIdx === idx;
+              const isAnyLoading = sceneLoadingIdx !== null;
+
               return (
                 <View
                   key={scene.sceneNumber ?? idx}
@@ -150,8 +177,8 @@ export default function StudioScreen({ route }) {
                   {/* 연출 지시문 */}
                   <View style={styles.sectionBlock}>
                     <View style={styles.sectionLabelRow}>
-                      <Text style={styles.sectionIconDirection}>🎭</Text>
-                      <Text style={[styles.sectionLabel, styles.sectionLabelDirection]}>
+                      <Text style={styles.sectionIcon}>🎭</Text>
+                      <Text style={[styles.sectionLabel, styles.labelDirection]}>
                         연출 지시문
                       </Text>
                     </View>
@@ -163,8 +190,8 @@ export default function StudioScreen({ route }) {
                   {/* 대사 */}
                   <View style={styles.sectionBlock}>
                     <View style={styles.sectionLabelRow}>
-                      <Text style={styles.sectionIconDialogue}>💬</Text>
-                      <Text style={[styles.sectionLabel, styles.sectionLabelDialogue]}>
+                      <Text style={styles.sectionIcon}>💬</Text>
+                      <Text style={[styles.sectionLabel, styles.labelDialogue]}>
                         대사
                       </Text>
                     </View>
@@ -173,25 +200,58 @@ export default function StudioScreen({ route }) {
                     </View>
                   </View>
 
-                  {/* 장면 렌더링 버튼 */}
-                  <TouchableOpacity
-                    style={[styles.renderBtn, { borderColor: accentColor }]}
-                    onPress={() => handleRenderScene(scene.sceneNumber ?? idx + 1)}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={[styles.renderBtnText, { color: accentColor }]}>
-                      🎬  이 장면 렌더링 (이미지 생성)
-                    </Text>
-                  </TouchableOpacity>
+                  {/* 이미지 생성 영역 */}
+                  <View style={styles.imageSection}>
+                    {imageUrl ? (
+                      /* 생성된 이미지 + 탭하여 전체화면 */
+                      <TouchableOpacity
+                        onPress={() => setModalImageUrl(imageUrl)}
+                        activeOpacity={0.92}
+                      >
+                        <Image
+                          source={{ uri: imageUrl }}
+                          style={styles.sceneImage}
+                          resizeMode="cover"
+                        />
+                        <View style={styles.imageTapHintRow}>
+                          <Text style={styles.imageTapHint}>🔍  탭하여 크게 보기</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ) : isLoadingThis ? (
+                      /* 이 씬 이미지 생성 중 */
+                      <View style={[styles.imageLoadingBox, { borderColor: accentColor + '60' }]}>
+                        <ActivityIndicator size="large" color={accentColor} />
+                        <Text style={[styles.imageLoadingText, { color: accentColor }]}>
+                          DALL-E 3가 장면을 그리는 중...
+                        </Text>
+                        <Text style={styles.imageLoadingHint}>최대 30초 소요될 수 있습니다</Text>
+                      </View>
+                    ) : (
+                      /* 렌더링 버튼 */
+                      <TouchableOpacity
+                        style={[
+                          styles.renderBtn,
+                          { borderColor: accentColor },
+                          isAnyLoading && styles.renderBtnDisabled,
+                        ]}
+                        onPress={() => handleRenderScene(idx, scene.direction)}
+                        disabled={isAnyLoading}
+                        activeOpacity={0.75}
+                      >
+                        <Text style={[styles.renderBtnText, { color: isAnyLoading ? '#C4C4C4' : accentColor }]}>
+                          🎨  이 장면 렌더링 (이미지 생성)
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
               );
             })}
           </>
         ) : null}
-
       </ScrollView>
 
-      {/* ── 고정 하단: 전체 합성 버튼 (대본 생성 후에만 표시) ── */}
+      {/* ─────────────── 고정 하단: 전체 합성 버튼 ─────────────── */}
       {script && !generating ? (
         <View style={styles.fixedFooter}>
           <TouchableOpacity
@@ -204,17 +264,44 @@ export default function StudioScreen({ route }) {
           </TouchableOpacity>
         </View>
       ) : null}
+
+      {/* ─────────────── 전체화면 이미지 모달 ─────────────── */}
+      <Modal
+        visible={!!modalImageUrl}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModalImageUrl(null)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setModalImageUrl(null)}
+        >
+          {modalImageUrl ? (
+            <Image
+              source={{ uri: modalImageUrl }}
+              style={styles.modalImage}
+              resizeMode="contain"
+            />
+          ) : null}
+          <View style={styles.modalCloseHint}>
+            <Text style={styles.modalCloseText}>✕  탭하여 닫기</Text>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </View>
   );
 }
 
+// ─── 스타일 ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F5F7FA' },
   scroll: { flex: 1 },
   inner: { padding: 16, paddingBottom: 32 },
-  innerWithFooter: { paddingBottom: 108 },
+  innerWithFooter: { paddingBottom: 112 },
 
-  // ── 프로필 카드 ───────────────────────────────────────────
+  // ── 프로필 카드 ─────────────────────────────────────────
   profileCard: {
     backgroundColor: '#fff',
     borderRadius: 18,
@@ -263,7 +350,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
 
-  // ── 생성 버튼 ─────────────────────────────────────────────
+  // ── 대본 생성 버튼 ──────────────────────────────────────
   generateBtn: {
     backgroundColor: '#4A90E2',
     borderRadius: 16,
@@ -284,12 +371,12 @@ const styles = StyleSheet.create({
   generateBtnIcon: { fontSize: 22 },
   generateBtnText: { fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
 
-  // ── 로딩 ──────────────────────────────────────────────────
+  // ── 대본 로딩 ───────────────────────────────────────────
   loadingBox: { alignItems: 'center', paddingVertical: 36, gap: 12 },
   loadingTitle: { fontSize: 16, fontWeight: '700', color: '#1A1A2E' },
   loadingSubtitle: { fontSize: 13, color: '#9CA3AF' },
 
-  // ── 대본 제목 카드 ────────────────────────────────────────
+  // ── 대본 제목 카드 ──────────────────────────────────────
   scriptTitleCard: {
     backgroundColor: '#1A1A2E',
     borderRadius: 16,
@@ -328,7 +415,7 @@ const styles = StyleSheet.create({
   },
   scriptMeta: { fontSize: 12, color: '#6B7280' },
 
-  // ── 씬 카드 ───────────────────────────────────────────────
+  // ── 씬 카드 ─────────────────────────────────────────────
   sceneCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -350,14 +437,12 @@ const styles = StyleSheet.create({
   sceneDot: { width: 8, height: 8, borderRadius: 4 },
   sceneNumber: { fontSize: 12, fontWeight: '800', letterSpacing: 1 },
 
-  // 연출 지시문 섹션
   sectionBlock: { paddingHorizontal: 16, paddingBottom: 12 },
   sectionLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 6 },
-  sectionIconDirection: { fontSize: 13 },
-  sectionIconDialogue: { fontSize: 13 },
+  sectionIcon: { fontSize: 13 },
   sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-  sectionLabelDirection: { color: '#D97706' },
-  sectionLabelDialogue: { color: '#4A90E2' },
+  labelDirection: { color: '#D97706' },
+  labelDialogue: { color: '#4A90E2' },
 
   directionBox: {
     backgroundColor: '#FFFBEB',
@@ -372,7 +457,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontStyle: 'italic',
   },
-
   dialogueBox: {
     backgroundColor: '#EFF6FF',
     borderRadius: 10,
@@ -386,19 +470,46 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
-  // 장면 렌더링 버튼
-  renderBtn: {
+  // ── 이미지 영역 ─────────────────────────────────────────
+  imageSection: {
     marginHorizontal: 16,
     marginBottom: 16,
-    paddingVertical: 11,
+  },
+  renderBtn: {
+    paddingVertical: 12,
     borderRadius: 10,
     borderWidth: 1.5,
     alignItems: 'center',
     backgroundColor: '#FAFAFA',
   },
+  renderBtnDisabled: { borderColor: '#E5E7EB', backgroundColor: '#F9F9F9' },
   renderBtnText: { fontSize: 13, fontWeight: '700' },
 
-  // ── 고정 하단 합성 버튼 ───────────────────────────────────
+  imageLoadingBox: {
+    alignItems: 'center',
+    paddingVertical: 32,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    gap: 10,
+    backgroundColor: '#FAFAFA',
+  },
+  imageLoadingText: { fontSize: 13, fontWeight: '700' },
+  imageLoadingHint: { fontSize: 11, color: '#9CA3AF' },
+
+  sceneImage: {
+    width: '100%',
+    aspectRatio: 9 / 16,
+    borderRadius: 12,
+    backgroundColor: '#E5E7EB',
+  },
+  imageTapHintRow: {
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  imageTapHint: { fontSize: 11, color: '#9CA3AF' },
+
+  // ── 고정 하단 합성 버튼 ─────────────────────────────────
   fixedFooter: {
     position: 'absolute',
     bottom: 0,
@@ -427,4 +538,25 @@ const styles = StyleSheet.create({
   },
   synthBtnIcon: { fontSize: 22 },
   synthBtnText: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+
+  // ── 전체화면 이미지 모달 ────────────────────────────────
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalImage: {
+    width: '90%',
+    height: '82%',
+    borderRadius: 16,
+  },
+  modalCloseHint: {
+    marginTop: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 24,
+  },
+  modalCloseText: { color: '#fff', fontSize: 14, fontWeight: '600' },
 });

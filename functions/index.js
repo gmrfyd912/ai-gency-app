@@ -211,12 +211,17 @@ exports.generateSceneImage = onCall(
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
+        // gpt-image-2 공식 스펙 파라미터만 사용
+        // - response_format: gpt-image-2 미지원 (DALL-E 2/3 전용) → 제거
+        // - output_format: 이미지 파일 포맷 (jpeg가 가장 작음)
+        // - quality: "low"로 페이로드 최소화
         body: JSON.stringify({
           model: "gpt-image-2",
           prompt: enhancedPrompt,
           n: 1,
           size: "1024x1536",
-          response_format: "url",
+          quality: "low",
+          output_format: "jpeg",
         }),
       });
     } catch (networkError) {
@@ -226,10 +231,10 @@ exports.generateSceneImage = onCall(
 
     const data = await res.json();
 
-    // ── 응답 키 구조만 로깅 (Base64 폭탄 방지) ───────────────
-    console.log("[OpenAI Raw Response] Keys:", Object.keys(data));
+    // 키 구조만 로깅 — Base64 본문은 절대 로깅하지 않음
+    console.log("[OpenAI Response] Keys:", Object.keys(data));
     if (Array.isArray(data?.data)) {
-      console.log("[OpenAI Raw Response] data[0] Keys:", Object.keys(data.data[0] ?? {}));
+      console.log("[OpenAI Response] data[0] Keys:", Object.keys(data.data[0] ?? {}));
     }
 
     if (!res.ok) {
@@ -238,23 +243,17 @@ exports.generateSceneImage = onCall(
       throw new HttpsError("internal", `이미지 생성 실패: ${msg}`);
     }
 
-    // ── 응답 구조에 따른 유연한 URL 추출 ─────────────────────
-    // 후보 1: 기존 DALL-E 스타일  { data: [{ url }] }
-    // 후보 2: 신형 output 스타일  { output: [{ url }] }
-    // 후보 3: 최상위              { url }
-    const imageUrl =
-      data?.data?.[0]?.url ||
-      data?.output?.[0]?.url ||
-      data?.url ||
-      null;
-
-    if (!imageUrl || typeof imageUrl !== "string" || !imageUrl.startsWith("http")) {
-      // 키 구조만 서버 로그에 남기고, 클라이언트에는 안전한 메시지만 전달
-      console.error("[generateSceneImage] URL 추출 실패, 응답 Keys:", Object.keys(data));
-      throw new HttpsError("internal", "이미지 URL을 받지 못했습니다. 서버 로그를 확인하세요.");
+    // gpt-image-2는 항상 b64_json 반환 (URL 방식 없음)
+    const b64 = data?.data?.[0]?.b64_json;
+    if (!b64) {
+      console.error("[generateSceneImage] b64_json 없음, data[0] Keys:",
+        Object.keys(data?.data?.[0] ?? {}));
+      throw new HttpsError("internal", "이미지 데이터를 받지 못했습니다. 서버 로그를 확인하세요.");
     }
 
-    console.log("[generateSceneImage] 성공, URL 앞부분:", imageUrl.slice(0, 80));
+    // Data URI로 변환 → React Native Image 컴포넌트에서 직접 렌더링 가능
+    const imageUrl = `data:image/jpeg;base64,${b64}`;
+    console.log("[generateSceneImage] 성공, base64 길이:", b64.length);
     return { imageUrl };
   }
 );

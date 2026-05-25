@@ -212,10 +212,10 @@ exports.generateSceneImage = onCall(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "dall-e-3",
+          model: "gpt-image-2",
           prompt: enhancedPrompt,
           n: 1,
-          size: "1024x1792",
+          size: "1024x1536",
         }),
       });
     } catch (networkError) {

@@ -259,6 +259,43 @@ exports.generateSceneImage = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
+// 씬 대사 → OpenAI TTS 오디오 생성 (Base64 MP3)
+// ────────────────────────────────────────────────────────────
+exports.generateSceneAudio = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const openai = new OpenAI();
+    const { dialogue, voice } = request.data;
+
+    if (!dialogue) {
+      throw new HttpsError("invalid-argument", "dialogue는 필수입니다.");
+    }
+
+    const VALID_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
+    const selectedVoice = VALID_VOICES.includes(voice) ? voice : "nova";
+
+    console.log("[generateSceneAudio] voice:", selectedVoice, "길이:", dialogue.length);
+
+    try {
+      const mp3 = await openai.audio.speech.create({
+        model: "tts-1",
+        voice: selectedVoice,
+        input: dialogue,
+      });
+
+      const buffer = Buffer.from(await mp3.arrayBuffer());
+      const base64 = buffer.toString("base64");
+      console.log("[generateSceneAudio] 성공, base64 길이:", base64.length);
+      return { audioUri: `data:audio/mp3;base64,${base64}` };
+    } catch (error) {
+      console.error("[generateSceneAudio] 오류:", error.message);
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", `오디오 생성 실패: ${error.message}`);
+    }
+  }
+);
+
+// ────────────────────────────────────────────────────────────
 // 직접 입력 분야 기반 AI 페르소나 초안 생성
 // ────────────────────────────────────────────────────────────
 exports.generatePersonaDraft = onCall(async (request) => {

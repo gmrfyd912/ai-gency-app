@@ -225,19 +225,35 @@ exports.generateSceneImage = onCall(
 
     const data = await res.json();
 
+    // ── 응답 전체 로깅 (구조 파악용) ──────────────────────────
+    console.log("[OpenAI Raw Response]:", JSON.stringify(data));
+
     if (!res.ok) {
       console.error("[generateSceneImage] OpenAI API 오류 응답:", JSON.stringify(data));
       const msg = data?.error?.message ?? `HTTP ${res.status}`;
       throw new HttpsError("internal", `이미지 생성 실패: ${msg}`);
     }
 
-    const imageUrl = data?.data?.[0]?.url;
-    if (!imageUrl) {
-      console.error("[generateSceneImage] URL 없음, 응답:", JSON.stringify(data));
-      throw new HttpsError("internal", "이미지 URL을 받지 못했습니다.");
+    // ── 응답 구조에 따른 유연한 URL 추출 ─────────────────────
+    // 후보 1: 기존 DALL-E 스타일 { data: [{ url }] }
+    // 후보 2: 신형 스타일 { output: [{ url }] } 또는 { output: [{ result }] }
+    // 후보 3: 최상위 { url }
+    const imageUrl =
+      data?.data?.[0]?.url ||
+      data?.output?.[0]?.url ||
+      data?.output?.[0]?.result ||
+      data?.output?.[0] ||
+      data?.url ||
+      null;
+
+    if (!imageUrl || typeof imageUrl !== "string") {
+      const rawDump = JSON.stringify(data);
+      console.error("[generateSceneImage] URL 추출 실패, 전체 응답:", rawDump);
+      // 에러 메시지에 응답 구조를 포함 → 클라이언트에서 구조 직접 확인 가능
+      throw new HttpsError("internal", `URL 추출 실패. 응답 구조: ${rawDump}`);
     }
 
-    console.log("[generateSceneImage] 성공, URL 앞부분:", imageUrl.slice(0, 60));
+    console.log("[generateSceneImage] 성공, URL 앞부분:", imageUrl.slice(0, 80));
     return { imageUrl };
   }
 );

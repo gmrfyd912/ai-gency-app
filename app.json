@@ -20,10 +20,19 @@
         "foregroundImage": "./assets/my-icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.gmrfyd912.aigencyapp"
     },
     "web": {
       "favicon": "./assets/my-icon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2bbb6d58-8a02-4cdd-9791-17a16e33157f"
+      }
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

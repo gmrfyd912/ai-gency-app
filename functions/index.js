@@ -182,38 +182,63 @@ exports.generateContent = onCall(async (request) => {
 });
 
 // ────────────────────────────────────────────────────────────
-// 씬 연출 지시문 → DALL-E 3 이미지 생성
+// 씬 연출 지시문 → DALL-E 3 이미지 생성 (raw fetch — SDK 우회)
 // ────────────────────────────────────────────────────────────
 exports.generateSceneImage = onCall(
   { timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
-    const openai = new OpenAI();
     const { visualPrompt } = request.data;
 
     if (!visualPrompt) {
       throw new HttpsError("invalid-argument", "visualPrompt는 필수입니다.");
     }
 
-    // 숏폼 영상 씬 특화 프롬프트로 강화
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new HttpsError("internal", "OPENAI_API_KEY 환경 변수가 없습니다.");
+    }
+
     const enhancedPrompt = `Cinematic short-form social media video frame. ${visualPrompt} High quality, vibrant colors, vertical smartphone video style, professional lighting.`;
 
-    try {
-      // DALL-E 3 전용 이미지 생성 엔드포인트 (chat.completions 아님)
-      const response = await openai.images.generate({
-        model: "dall-e-3",
-        prompt: enhancedPrompt,
-        n: 1,
-        size: "1024x1792",
-      });
+    console.log("[generateSceneImage] 호출 시작, prompt 길이:", enhancedPrompt.length);
 
-      const imageUrl = response.data[0].url;
-      return { imageUrl };
-    } catch (error) {
-      console.error("이미지 생성 오류:", error);
-      console.error("상세:", JSON.stringify(error?.error ?? error?.message));
-      if (error instanceof HttpsError) throw error;
-      throw new HttpsError("internal", `이미지 생성 실패: ${error.message}`);
+    let res;
+    try {
+      // OpenAI SDK를 완전히 우회 — REST API 직접 호출
+      res = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "dall-e-3",
+          prompt: enhancedPrompt,
+          n: 1,
+          size: "1024x1792",
+        }),
+      });
+    } catch (networkError) {
+      console.error("[generateSceneImage] 네트워크 오류:", networkError.message);
+      throw new HttpsError("internal", `네트워크 오류: ${networkError.message}`);
     }
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.error("[generateSceneImage] OpenAI API 오류 응답:", JSON.stringify(data));
+      const msg = data?.error?.message ?? `HTTP ${res.status}`;
+      throw new HttpsError("internal", `이미지 생성 실패: ${msg}`);
+    }
+
+    const imageUrl = data?.data?.[0]?.url;
+    if (!imageUrl) {
+      console.error("[generateSceneImage] URL 없음, 응답:", JSON.stringify(data));
+      throw new HttpsError("internal", "이미지 URL을 받지 못했습니다.");
+    }
+
+    console.log("[generateSceneImage] 성공, URL 앞부분:", imageUrl.slice(0, 60));
+    return { imageUrl };
   }
 );
 

@@ -55,15 +55,18 @@ export default function StudioScreen({ route }) {
     }
   };
 
-  // ── 씬 이미지 생성 (DALL-E 3) ────────────────────────────
+  // ── 씬 이미지 생성 ────────────────────────────────────────
   const handleRenderScene = async (idx, direction) => {
     setSceneLoadingIdx(idx);
     try {
       const result = await generateSceneImageFn({ visualPrompt: direction });
       setSceneImages((prev) => ({ ...prev, [idx]: result.data.imageUrl }));
     } catch (e) {
-      Alert.alert('이미지 생성 실패', e.message);
+      // 에러 메시지 100자 제한 — Base64 등 대용량 문자열이 Alert에 들어가 ANR 유발 방지
+      const safeMsg = (e?.message ?? '알 수 없는 오류').slice(0, 100);
+      Alert.alert('이미지 생성 실패', safeMsg);
     } finally {
+      // finally 보장: 성공/실패/예외 모든 경우에 로딩 상태 해제
       setSceneLoadingIdx(null);
     }
   };

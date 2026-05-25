@@ -124,7 +124,7 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// 크리에이터 숏폼 콘텐츠(대본) 생성
+// 크리에이터 숏폼 콘텐츠(대본) 생성 — JSON 구조화 응답
 // ────────────────────────────────────────────────────────────
 exports.generateContent = onCall(async (request) => {
   const openai = new OpenAI();
@@ -134,16 +134,46 @@ exports.generateContent = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "name과 prompt는 필수입니다.");
   }
 
-  const userPrompt = `당신은 ${prompt} 성격을 가진 크리에이터 '${name}'입니다. 당신의 성격과 전문 분야에 딱 맞는 1분 분량의 숏폼 비디오 대본을 작성하세요. 결과물은 [영상 제목], [장면 1: 화면 연출 지시문 / 대사], [장면 2...] 형태로 가독성 좋게 포맷팅하여 텍스트로 반환하세요.`;
+  const systemPrompt = `당신은 숏폼 영상 대본 전문 작가입니다.
+반드시 유효한 JSON만 반환하고, 다른 텍스트는 절대 포함하지 마세요.`;
+
+  const userPrompt = `당신은 ${prompt} 성격을 가진 크리에이터 '${name}'입니다.
+당신의 성격과 전문 분야에 딱 맞는 1분 분량의 숏폼 비디오 대본을 아래 JSON 형식으로 작성하세요.
+
+{
+  "title": "영상 제목 (한 줄, 시청자의 클릭을 유도하는 흥미로운 제목)",
+  "scenes": [
+    {
+      "sceneNumber": 1,
+      "direction": "카메라 앵글·배경·분위기 등 구체적인 화면 연출 지시문 (1~2문장)",
+      "dialogue": "크리에이터가 실제로 말하는 자연스러운 대사 (2~4문장, 개성이 드러나도록)"
+    }
+  ]
+}
+
+조건:
+- 장면(scenes) 수: 정확히 5개
+- 크리에이터 '${name}'의 개성이 대사에 분명히 드러날 것
+- direction은 영상 편집자가 실제로 쓸 수 있는 구체적 지시문`;
 
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: userPrompt }],
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
       temperature: 0.9,
     });
 
-    return { content: completion.choices[0].message.content };
+    const parsed = JSON.parse(completion.choices[0].message.content);
+
+    if (!parsed.title || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
+      throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
+    }
+
+    return { title: parsed.title, scenes: parsed.scenes };
   } catch (error) {
     console.error("콘텐츠 생성 오류:", error);
     if (error instanceof HttpsError) throw error;

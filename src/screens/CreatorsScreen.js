@@ -1,74 +1,31 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Button,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   StyleSheet,
   Text,
-  TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
-import {
-  addDoc,
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-} from 'firebase/firestore';
+import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
-export default function CreatorsScreen() {
-  const [name, setName] = useState('');
-  const [persona, setPersona] = useState('');
+export default function CreatorsScreen({ navigation }) {
   const [creators, setCreators] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const q = query(collection(db, 'creators'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      setCreators(data);
+      setCreators(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
       setLoading(false);
     });
     return unsubscribe;
   }, []);
 
-  const handleAdd = async () => {
-    if (!name.trim() || !persona.trim()) return;
-    await addDoc(collection(db, 'creators'), {
-      name: name.trim(),
-      persona: persona.trim(),
-      createdAt: serverTimestamp(),
-    });
-    setName('');
-    setPersona('');
-  };
-
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <Text style={styles.title}>👩‍🎤 소속 크리에이터 관리</Text>
-
-      <View style={styles.form}>
-        <TextInput
-          style={styles.input}
-          placeholder="크리에이터 이름"
-          value={name}
-          onChangeText={setName}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="성격 / 특징"
-          value={persona}
-          onChangeText={setPersona}
-        />
-        <Button title="영입하기" onPress={handleAdd} color="#4A90E2" />
-      </View>
+    <View style={styles.container}>
+      <Text style={styles.title}>👩‍🎤 소속 크리에이터</Text>
 
       {loading ? (
         <ActivityIndicator style={styles.loader} size="large" color="#4A90E2" />
@@ -78,25 +35,42 @@ export default function CreatorsScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           ListEmptyComponent={
-            <Text style={styles.empty}>아직 소속 크리에이터가 없습니다.</Text>
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyIcon}>🎤</Text>
+              <Text style={styles.empty}>아직 소속 크리에이터가 없습니다.</Text>
+              <Text style={styles.emptyHint}>아래 + 버튼으로 첫 크리에이터를 영입해보세요!</Text>
+            </View>
           }
           renderItem={({ item }) => (
             <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                {item.category ? (
+                  <Text style={styles.categoryBadge}>{item.category}</Text>
+                ) : null}
+              </View>
               <Text style={styles.cardName}>{item.name}</Text>
-              <Text style={styles.cardPersona}>{item.persona}</Text>
+              <Text style={styles.cardPersona} numberOfLines={2}>{item.persona}</Text>
+              {item.voice ? (
+                <Text style={styles.cardVoice}>🎙 {item.voice}</Text>
+              ) : null}
             </View>
           )}
         />
       )}
-    </KeyboardAvoidingView>
+
+      {/* 플로팅 액션 버튼 */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => navigation.navigate('CreateCreator')}
+      >
+        <Text style={styles.fabText}>＋</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F7FA',
-  },
+  container: { flex: 1, backgroundColor: '#F5F7FA' },
   title: {
     fontSize: 22,
     fontWeight: 'bold',
@@ -105,55 +79,52 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     color: '#1A1A2E',
   },
-  form: {
+  loader: { marginTop: 40 },
+  list: { padding: 16, gap: 12, paddingBottom: 90 },
+
+  emptyBox: { alignItems: 'center', marginTop: 60 },
+  emptyIcon: { fontSize: 48, marginBottom: 12 },
+  empty: { fontSize: 15, color: '#9CA3AF', marginBottom: 6 },
+  emptyHint: { fontSize: 13, color: '#C4C4C4' },
+
+  card: {
     backgroundColor: '#fff',
-    marginHorizontal: 16,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    gap: 10,
     shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 3,
   },
-  input: {
-    borderWidth: 1,
-    borderColor: '#D0D7E3',
+  cardHeader: { flexDirection: 'row', marginBottom: 6 },
+  categoryBadge: {
+    backgroundColor: '#EBF4FF',
+    color: '#4A90E2',
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: 8,
-    padding: 10,
-    fontSize: 15,
-    backgroundColor: '#FAFAFA',
+    overflow: 'hidden',
   },
-  loader: {
-    marginTop: 40,
+  cardName: { fontSize: 17, fontWeight: '700', color: '#1A1A2E', marginBottom: 4 },
+  cardPersona: { fontSize: 13, color: '#6B7280', lineHeight: 20, marginBottom: 6 },
+  cardVoice: { fontSize: 12, color: '#9CA3AF' },
+
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 24,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#4A90E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#4A90E2',
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    elevation: 8,
   },
-  list: {
-    padding: 16,
-    gap: 10,
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  cardName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1A1A2E',
-    marginBottom: 4,
-  },
-  cardPersona: {
-    fontSize: 14,
-    color: '#6B7280',
-  },
-  empty: {
-    textAlign: 'center',
-    color: '#9CA3AF',
-    marginTop: 40,
-    fontSize: 15,
-  },
+  fabText: { fontSize: 28, color: '#fff', lineHeight: 32 },
 });

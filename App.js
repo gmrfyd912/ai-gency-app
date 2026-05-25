@@ -6,7 +6,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import DashboardScreen from './src/screens/DashboardScreen';
-import CreatorsScreen from './src/screens/CreatorsScreen';
+import CreatorsStack from './src/navigation/CreatorsStack';
 import StudioScreen from './src/screens/StudioScreen';
 
 // 폰트 로딩 완료 전까지 스플래시 자동 숨김 방지
@@ -55,8 +55,9 @@ export default function App() {
           />
           <Tab.Screen
             name="크리에이터"
-            component={CreatorsScreen}
+            component={CreatorsStack}
             options={{
+              headerShown: false,
               tabBarIcon: ({ color, size }) => (
                 <Ionicons name="people" color={color} size={size} />
               ),

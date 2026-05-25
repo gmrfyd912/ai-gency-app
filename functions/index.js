@@ -1,10 +1,18 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const OpenAI = require("openai");
 const admin = require("firebase-admin");
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
 
 // Firebase Admin SDK 초기화 (Firestore 서버 사이드 쓰기용)
 admin.initializeApp();
 const adminDb = admin.firestore();
+
+// FFmpeg 바이너리 경로 설정 (@ffmpeg-installer/ffmpeg 번들 바이너리)
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 // ────────────────────────────────────────────────────────────
 // 테스트용 함수
@@ -255,6 +263,140 @@ exports.generateSceneImage = onCall(
     const imageUrl = `data:image/jpeg;base64,${b64}`;
     console.log("[generateSceneImage] 성공, base64 길이:", b64.length);
     return { imageUrl };
+  }
+);
+
+// ────────────────────────────────────────────────────────────
+// FFmpeg 기반 클라우드 비디오 렌더링 파이프라인
+// ────────────────────────────────────────────────────────────
+exports.generateFinalVideo = onCall(
+  { timeoutSeconds: 540, memory: "2GiB" },
+  async (request) => {
+    const { creatorId, episodeId } = request.data;
+
+    if (!creatorId || !episodeId) {
+      throw new HttpsError("invalid-argument", "creatorId와 episodeId는 필수입니다.");
+    }
+
+    // ── Firestore 에피소드 조회 ──────────────────────────────
+    const episodeRef = adminDb
+      .collection("creators").doc(creatorId)
+      .collection("episodes").doc(episodeId);
+    const episodeSnap = await episodeRef.get();
+
+    if (!episodeSnap.exists) {
+      throw new HttpsError("not-found", "에피소드를 찾을 수 없습니다.");
+    }
+
+    const episode = episodeSnap.data();
+    const scenes = episode.scenes ?? [];
+
+    // ── 씬 데이터 검증 ────────────────────────────────────────
+    const incompleteScenes = scenes
+      .map((s, i) => ({ i: i + 1, hasImg: !!s.imageUri, hasAudio: !!s.audioUri }))
+      .filter((s) => !s.hasImg || !s.hasAudio);
+
+    if (incompleteScenes.length > 0) {
+      const detail = incompleteScenes
+        .map((s) => `씬${s.i}(${!s.hasImg ? "이미지 " : ""}${!s.hasAudio ? "오디오" : ""} 없음)`)
+        .join(", ");
+      throw new HttpsError("failed-precondition", `합성 불가 — ${detail}`);
+    }
+
+    const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const tmpDir = os.tmpdir();
+    const tmpFiles = [];
+
+    // FFmpeg 명령 실행 헬퍼
+    const runFfmpeg = (cmd) =>
+      new Promise((resolve, reject) => {
+        cmd
+          .on("start", (c) => console.log("[FFmpeg]", c.slice(0, 120)))
+          .on("end", resolve)
+          .on("error", (err, _stdout, stderr) => {
+            console.error("[FFmpeg stderr]", (stderr || "").slice(0, 400));
+            reject(new Error(stderr || err.message));
+          })
+          .run();
+      });
+
+    try {
+      // ── 각 씬: 이미지·오디오 파일 저장 + 개별 클립 생성 ─────
+      const clipPaths = [];
+      for (let i = 0; i < scenes.length; i++) {
+        const scene = scenes[i];
+
+        const imgBase64   = scene.imageUri.replace(/^data:[^;]+;base64,/, "");
+        const audioBase64 = scene.audioUri.replace(/^data:[^;]+;base64,/, "");
+
+        const imgPath   = path.join(tmpDir, `img_${sessionId}_${i}.jpg`);
+        const audioPath = path.join(tmpDir, `audio_${sessionId}_${i}.mp3`);
+        const clipPath  = path.join(tmpDir, `clip_${sessionId}_${i}.mp4`);
+        tmpFiles.push(imgPath, audioPath, clipPath);
+
+        fs.writeFileSync(imgPath,   Buffer.from(imgBase64,   "base64"));
+        fs.writeFileSync(audioPath, Buffer.from(audioBase64, "base64"));
+
+        await runFfmpeg(
+          ffmpeg()
+            .input(imgPath).inputOptions(["-loop 1"])
+            .input(audioPath)
+            .videoCodec("libx264")
+            .outputOptions([
+              "-tune stillimage",
+              "-pix_fmt yuv420p",
+              "-shortest",
+              "-movflags +faststart",
+            ])
+            .audioCodec("aac").audioBitrate("128k")
+            .output(clipPath)
+        );
+        clipPaths.push(clipPath);
+        console.log(`[generateFinalVideo] 클립 ${i + 1}/${scenes.length} 완료`);
+      }
+
+      // ── concat 목록 파일 작성 ─────────────────────────────
+      const listPath  = path.join(tmpDir, `list_${sessionId}.txt`);
+      const finalPath = path.join(tmpDir, `final_${sessionId}.mp4`);
+      tmpFiles.push(listPath, finalPath);
+
+      fs.writeFileSync(listPath, clipPaths.map((p) => `file '${p}'`).join("\n"));
+
+      // ── 개별 클립 → 최종 영상 병합 ───────────────────────
+      await runFfmpeg(
+        ffmpeg()
+          .input(listPath).inputOptions(["-f concat", "-safe 0"])
+          .outputOptions(["-c copy"])
+          .output(finalPath)
+      );
+      console.log("[generateFinalVideo] 최종 병합 완료");
+
+      // ── Firebase Storage 업로드 ───────────────────────────
+      const storagePath = `creators/${creatorId}/episodes/${episodeId}/final.mp4`;
+      const bucket = admin.storage().bucket();
+
+      await bucket.upload(finalPath, {
+        destination: storagePath,
+        metadata: { contentType: "video/mp4" },
+      });
+
+      // 서명된 다운로드 URL 발급 (1년)
+      const [videoUrl] = await bucket.file(storagePath).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
+      });
+      console.log("[generateFinalVideo] Storage 업로드 완료");
+
+      // ── Firestore 업데이트 ───────────────────────────────
+      await episodeRef.update({ videoUrl });
+
+      return { videoUrl };
+    } finally {
+      // 임시 파일 일괄 삭제
+      for (const f of tmpFiles) {
+        try { fs.unlinkSync(f); } catch (_) {}
+      }
+    }
   }
 );
 

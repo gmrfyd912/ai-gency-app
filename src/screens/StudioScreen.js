@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Audio } from 'expo-av';
+import { Audio, ResizeMode, Video } from 'expo-av';
 import {
   addDoc,
   collection,
@@ -26,9 +26,10 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
 // ── Cloud Function 클라이언트 ─────────────────────────────────
-const generateContentFn   = httpsCallable(functions, 'generateContent');
+const generateContentFn    = httpsCallable(functions, 'generateContent');
 const generateSceneImageFn = httpsCallable(functions, 'generateSceneImage', { timeout: 90000 });
 const generateSceneAudioFn = httpsCallable(functions, 'generateSceneAudio');
+const generateFinalVideoFn = httpsCallable(functions, 'generateFinalVideo', { timeout: 300000 });
 
 // ── 상수 ─────────────────────────────────────────────────────
 const pad = (n) => String(n).padStart(2, '0');
@@ -68,6 +69,10 @@ export default function StudioScreen({ route }) {
   // ── Firestore 자동 저장 상태 ─────────────────────────────
   const [currentEpisodeId, setCurrentEpisodeId] = useState(null);
   const [initialLoading, setInitialLoading]     = useState(true);
+
+  // ── 영상 합성 상태 ────────────────────────────────────────
+  const [synthesizing, setSynthesizing] = useState(false);
+  const [videoUrl, setVideoUrl]         = useState(null);
 
   // ── 마운트: Audio 모드 설정 + 최신 에피소드 로드 ──────────
   useEffect(() => {
@@ -109,6 +114,7 @@ export default function StudioScreen({ route }) {
         });
         setSceneImages(savedImages);
         setSceneAudios(savedAudios);
+        if (data.videoUrl) setVideoUrl(data.videoUrl);
       }
     } catch (e) {
       console.error('에피소드 로드 실패:', e.message);
@@ -137,6 +143,8 @@ export default function StudioScreen({ route }) {
     setSceneAudios({});
     setSceneLoadingIdx(null);
     setCurrentEpisodeId(null);
+    setVideoUrl(null);
+    setSynthesizing(false);
     if (soundRef.current) {
       await soundRef.current.stopAsync();
       await soundRef.current.unloadAsync();
@@ -224,8 +232,32 @@ export default function StudioScreen({ route }) {
     }
   };
 
-  const handleSynthesize = () => {
-    Alert.alert('🎥 영상 합성', '비디오 렌더링 서버 연동 준비 중입니다.', [{ text: '확인' }]);
+  const handleSynthesize = async () => {
+    if (!script || !currentEpisodeId || synthesizing) return;
+
+    // Pre-flight: 모든 씬에 이미지 + 오디오가 있는지 확인
+    const missing = script.scenes.reduce((acc, _, idx) => {
+      if (!sceneImages[idx] || !sceneAudios[idx]) acc.push(idx + 1);
+      return acc;
+    }, []);
+    if (missing.length > 0) {
+      Alert.alert(
+        '합성 불가',
+        `씬 ${missing.join(', ')}번의 이미지 또는 오디오가 없습니다.\n모든 씬을 먼저 완성해주세요.`,
+        [{ text: '확인' }]
+      );
+      return;
+    }
+
+    setSynthesizing(true);
+    try {
+      const result = await generateFinalVideoFn({ creatorId: creator.id, episodeId: currentEpisodeId });
+      setVideoUrl(result.data.videoUrl);
+    } catch (e) {
+      Alert.alert('렌더링 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
+    } finally {
+      setSynthesizing(false);
+    }
   };
 
   // ── 초기 로딩 화면 ───────────────────────────────────────
@@ -313,6 +345,24 @@ export default function StudioScreen({ route }) {
               <Text style={styles.scriptTitle}>{script.title}</Text>
               <Text style={styles.scriptMeta}>총 {script.scenes.length}개 장면</Text>
             </View>
+
+            {/* ── 완성 영상 플레이어 ── */}
+            {videoUrl ? (
+              <View style={styles.videoSection}>
+                <View style={styles.videoHeader}>
+                  <Text style={styles.videoHeaderIcon}>🎬</Text>
+                  <Text style={styles.videoHeaderText}>완성된 숏폼 영상</Text>
+                </View>
+                <Video
+                  source={{ uri: videoUrl }}
+                  style={styles.videoPlayer}
+                  useNativeControls
+                  resizeMode={ResizeMode.CONTAIN}
+                  shouldPlay={false}
+                />
+                <Text style={styles.videoHint}>네이티브 컨트롤로 재생·정지·탐색</Text>
+              </View>
+            ) : null}
 
             {script.scenes.map((scene, idx) => {
               const accentColor    = SCENE_COLORS[idx % SCENE_COLORS.length];
@@ -441,9 +491,25 @@ export default function StudioScreen({ route }) {
       {/* ── 고정 하단 합성 버튼 ── */}
       {script && !generating ? (
         <View style={styles.fixedFooter}>
-          <TouchableOpacity style={styles.synthBtn} onPress={handleSynthesize} activeOpacity={0.88}>
-            <Text style={styles.synthBtnIcon}>🎥</Text>
-            <Text style={styles.synthBtnText}>전체 숏폼 영상으로 합성하기</Text>
+          <TouchableOpacity
+            style={[styles.synthBtn, synthesizing && styles.synthBtnDisabled]}
+            onPress={handleSynthesize}
+            disabled={synthesizing}
+            activeOpacity={0.88}
+          >
+            {synthesizing ? (
+              <>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.synthBtnText}>클라우드 렌더링 공장 가동 중... (최대 2분 소요)</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.synthBtnIcon}>🎥</Text>
+                <Text style={styles.synthBtnText}>
+                  {videoUrl ? '영상 재렌더링하기' : '전체 숏폼 영상으로 합성하기'}
+                </Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
       ) : null}
@@ -550,8 +616,17 @@ const styles = StyleSheet.create({
   // 고정 하단
   fixedFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 24, paddingTop: 10, backgroundColor: '#F5F7FA', borderTopWidth: 1, borderTopColor: '#E5E7EB' },
   synthBtn: { backgroundColor: '#1A1A2E', borderRadius: 16, paddingVertical: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, shadowColor: '#1A1A2E', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
+  synthBtnDisabled: { opacity: 0.75, elevation: 2 },
   synthBtnIcon: { fontSize: 22 },
   synthBtnText: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+
+  // 영상 플레이어
+  videoSection: { marginBottom: 16, backgroundColor: '#1A1A2E', borderRadius: 20, overflow: 'hidden', shadowColor: '#1A1A2E', shadowOpacity: 0.25, shadowRadius: 14, elevation: 8 },
+  videoHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 10 },
+  videoHeaderIcon: { fontSize: 20 },
+  videoHeaderText: { fontSize: 16, fontWeight: '800', color: '#fff' },
+  videoPlayer: { width: '100%', aspectRatio: 9 / 16, backgroundColor: '#000' },
+  videoHint: { fontSize: 11, color: '#9CA3AF', textAlign: 'center', paddingVertical: 10 },
 
   // 전체화면 모달
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },

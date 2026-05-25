@@ -1,47 +1,76 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
-import { Ionicons, MaterialIcons, MaterialCommunityIcons, FontAwesome } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import DashboardScreen from './src/screens/DashboardScreen';
 import CreatorsScreen from './src/screens/CreatorsScreen';
 import StudioScreen from './src/screens/StudioScreen';
 
-// 폰트 로딩 완료 전까지 스플래시 화면 자동 숨김 방지
+// 폰트 로딩 완료 전까지 스플래시 자동 숨김 방지
 SplashScreen.preventAutoHideAsync();
 
 const Tab = createBottomTabNavigator();
 
 export default function App() {
-  // @react-navigation/bottom-tabs 내부 + 앱 전체에서 사용하는 모든 아이콘 폰트 로드
   const [fontsLoaded, fontError] = useFonts({
     ...Ionicons.font,
-    ...MaterialIcons.font,
-    ...MaterialCommunityIcons.font,
-    ...FontAwesome.font,
   });
 
-  // 네이티브 뷰 렌더 완료 시점에 스플래시 해제 (화면 깜빡임 방지)
+  // 스플래시 최소 1.5초 유지를 위한 대기 상태
+  const [minDelayPassed, setMinDelayPassed] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMinDelayPassed(true), 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // 폰트 로딩 완료 + 최소 대기 시간 모두 충족 시 스플래시 해제
   const onLayoutRootView = useCallback(async () => {
-    if (fontsLoaded || fontError) {
+    if ((fontsLoaded || fontError) && minDelayPassed) {
       await SplashScreen.hideAsync();
     }
-  }, [fontsLoaded, fontError]);
+  }, [fontsLoaded, fontError, minDelayPassed]);
 
-  // 폰트 로딩 중 → null 반환으로 스플래시 화면 유지
-  if (!fontsLoaded && !fontError) {
+  // 두 조건 중 하나라도 미충족이면 스플래시 유지
+  if ((!fontsLoaded && !fontError) || !minDelayPassed) {
     return null;
   }
 
   return (
-    <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
+    // backgroundColor: '#FFFFFF' 로 투명 겹침 현상 완전 차단
+    <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} onLayout={onLayoutRootView}>
       <NavigationContainer>
         <Tab.Navigator>
-          <Tab.Screen name="대시보드" component={DashboardScreen} />
-          <Tab.Screen name="크리에이터" component={CreatorsScreen} />
-          <Tab.Screen name="스튜디오" component={StudioScreen} />
+          <Tab.Screen
+            name="대시보드"
+            component={DashboardScreen}
+            options={{
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="home" color={color} size={size} />
+              ),
+            }}
+          />
+          <Tab.Screen
+            name="크리에이터"
+            component={CreatorsScreen}
+            options={{
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="people" color={color} size={size} />
+              ),
+            }}
+          />
+          <Tab.Screen
+            name="스튜디오"
+            component={StudioScreen}
+            options={{
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="videocam" color={color} size={size} />
+              ),
+            }}
+          />
         </Tab.Navigator>
       </NavigationContainer>
     </View>

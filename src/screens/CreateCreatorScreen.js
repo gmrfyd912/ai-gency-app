@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import {
@@ -33,6 +35,11 @@ export default function CreateCreatorScreen({ navigation }) {
   // ── 단계 선택 상태 ──────────────────────────────────────────
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [selectedSub, setSelectedSub] = useState(null);
+
+  // ── 직접 입력 모달 상태 ─────────────────────────────────────
+  const [modalVisible, setModalVisible] = useState(false);
+  const [customInput, setCustomInput] = useState('');
+  const customInputRef = useRef(null);
 
   // ── 3단계 폼 상태 ───────────────────────────────────────────
   const [creatorName, setCreatorName] = useState('');
@@ -87,6 +94,30 @@ export default function CreateCreatorScreen({ navigation }) {
   const handleSelectCategory = (cat) => {
     setSelectedCategory(cat);
     setSelectedSub(null);
+    setCreatorName('');
+    setVoice('');
+    setPrompt('');
+  };
+
+  // ── 직접 입력 모달 열기 ───────────────────────────────────
+  const handleOpenCustomModal = () => {
+    setCustomInput('');
+    setModalVisible(true);
+    setTimeout(() => customInputRef.current?.focus(), 200);
+  };
+
+  // ── 직접 입력 확정 → STEP 2 건너뛰고 STEP 3으로 ─────────
+  const handleConfirmCustom = () => {
+    const trimmed = customInput.trim();
+    if (!trimmed) {
+      Alert.alert('입력 오류', '분야를 입력해주세요.');
+      return;
+    }
+    setModalVisible(false);
+    // isCustom 플래그로 Step 2를 건너뜀
+    setSelectedCategory({ label: trimmed, icon: '✏️', subs: [], isCustom: true });
+    // sentinel sub: Step 3 폼을 열되 필드는 비워 둠
+    setSelectedSub({ name: '', voice: '', prompt: '', isCustom: true });
     setCreatorName('');
     setVoice('');
     setPrompt('');
@@ -177,35 +208,64 @@ export default function CreateCreatorScreen({ navigation }) {
                 상단 'AI 갱신' 버튼을 눌러 오늘의 트렌드를 생성하세요.
               </Text>
             </View>
-          ) : (
-            <View style={styles.categoryGrid}>
-              {categories.map((cat, idx) => (
-                <TouchableOpacity
-                  key={idx}
+          ) : null}
+
+          {/* 트렌드 카드 + 직접 입력 카드를 항상 같은 그리드에 배치 */}
+          <View style={styles.categoryGrid}>
+            {categories.map((cat, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={[
+                  styles.categoryBtn,
+                  selectedCategory?.label === cat.label &&
+                    !selectedCategory?.isCustom &&
+                    styles.categoryBtnActive,
+                ]}
+                onPress={() => handleSelectCategory(cat)}
+              >
+                <Text style={styles.categoryIcon}>{cat.icon}</Text>
+                <Text
                   style={[
-                    styles.categoryBtn,
-                    selectedCategory?.label === cat.label && styles.categoryBtnActive,
+                    styles.categoryLabel,
+                    selectedCategory?.label === cat.label &&
+                      !selectedCategory?.isCustom &&
+                      styles.categoryLabelActive,
                   ]}
-                  onPress={() => handleSelectCategory(cat)}
+                  numberOfLines={2}
                 >
-                  <Text style={styles.categoryIcon}>{cat.icon}</Text>
-                  <Text
-                    style={[
-                      styles.categoryLabel,
-                      selectedCategory?.label === cat.label && styles.categoryLabelActive,
-                    ]}
-                    numberOfLines={2}
-                  >
-                    {cat.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+
+            {/* 직접 분야 입력 카드 */}
+            <TouchableOpacity
+              style={[
+                styles.categoryBtn,
+                styles.customCategoryBtn,
+                selectedCategory?.isCustom && styles.customCategoryBtnActive,
+              ]}
+              onPress={handleOpenCustomModal}
+            >
+              <Text style={styles.categoryIcon}>✏️</Text>
+              <Text
+                style={[
+                  styles.categoryLabel,
+                  styles.customCategoryLabel,
+                  selectedCategory?.isCustom && styles.customCategoryLabelActive,
+                ]}
+                numberOfLines={2}
+              >
+                {selectedCategory?.isCustom
+                  ? selectedCategory.label
+                  : '직접 입력'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* ── STEP 2: 소주제 추천 카드 ──────────────────────── */}
-        {selectedCategory && (
+        {/* ── STEP 2: 소주제 추천 카드 (직접 입력 시 건너뜀) ── */}
+        {selectedCategory && !selectedCategory.isCustom && (
           <View style={styles.stepBlock}>
             <Text style={styles.stepBadge}>STEP 2</Text>
             <Text style={styles.stepTitle}>트렌드 추천 컨셉을 선택하세요</Text>
@@ -242,8 +302,8 @@ export default function CreateCreatorScreen({ navigation }) {
           </View>
         )}
 
-        {/* ── STEP 3: 커스터마이징 폼 ──────────────────────── */}
-        {selectedSub && (
+        {/* ── STEP 3: 커스터마이징 폼 (일반 선택 or 직접 입력) ── */}
+        {(selectedSub || selectedCategory?.isCustom) && (
           <View style={styles.stepBlock}>
             <Text style={styles.stepBadge}>STEP 3</Text>
             <Text style={styles.stepTitle}>자유롭게 커스터마이징하세요</Text>
@@ -288,6 +348,59 @@ export default function CreateCreatorScreen({ navigation }) {
         )}
 
       </ScrollView>
+
+      {/* ── 직접 분야 입력 모달 ──────────────────────────────── */}
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.modalCard}>
+                <Text style={styles.modalTitle}>✏️ 직접 분야 입력</Text>
+                <Text style={styles.modalSubtitle}>
+                  원하는 크리에이터 분야를 자유롭게 입력하세요
+                </Text>
+                <TextInput
+                  ref={customInputRef}
+                  style={styles.modalInput}
+                  value={customInput}
+                  onChangeText={setCustomInput}
+                  placeholder="예: K-뷰티, 요리/레시피, 투자 정보..."
+                  placeholderTextColor="#9CA3AF"
+                  returnKeyType="done"
+                  onSubmitEditing={handleConfirmCustom}
+                  maxLength={20}
+                />
+                <Text style={styles.modalCharCount}>{customInput.length} / 20</Text>
+                <View style={styles.modalBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.modalCancelBtn]}
+                    onPress={() => setModalVisible(false)}
+                  >
+                    <Text style={styles.modalCancelText}>취소</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalBtn,
+                      styles.modalConfirmBtn,
+                      !customInput.trim() && styles.modalConfirmBtnDisabled,
+                    ]}
+                    onPress={handleConfirmCustom}
+                    disabled={!customInput.trim()}
+                  >
+                    <Text style={styles.modalConfirmText}>생성 →</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+
     </KeyboardAvoidingView>
   );
 }
@@ -453,4 +566,82 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  // 직접 입력 카드
+  customCategoryBtn: {
+    borderStyle: 'dashed',
+    borderColor: '#9CA3AF',
+    backgroundColor: '#FAFAFA',
+  },
+  customCategoryBtnActive: {
+    borderStyle: 'solid',
+    borderColor: '#4A90E2',
+    backgroundColor: '#EBF4FF',
+  },
+  customCategoryLabel: { color: '#6B7280' },
+  customCategoryLabelActive: { color: '#4A90E2' },
+
+  // 모달
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A2E',
+    marginBottom: 6,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 16,
+    lineHeight: 19,
+  },
+  modalInput: {
+    borderWidth: 1.5,
+    borderColor: '#4A90E2',
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    backgroundColor: '#F9FBFF',
+    color: '#1A1A2E',
+  },
+  modalCharCount: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  modalBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  modalCancelBtn: {
+    backgroundColor: '#F3F4F6',
+  },
+  modalCancelText: { color: '#6B7280', fontSize: 15, fontWeight: '600' },
+  modalConfirmBtn: { backgroundColor: '#4A90E2' },
+  modalConfirmBtnDisabled: { backgroundColor: '#B3D0F5' },
+  modalConfirmText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

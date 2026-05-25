@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Speech from 'expo-speech';
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { functions, db } from '../services/firebase';
@@ -39,6 +40,11 @@ export default function StudioScreen() {
     setName(creator.name);
     setPersona(creator.persona);
     setGreeting('');
+  };
+
+  const handleSpeak = () => {
+    Speech.stop();
+    Speech.speak(greeting, { language: 'ko-KR', rate: 0.9, pitch: 1.0 });
   };
 
   const handleGenerate = async () => {
@@ -133,6 +139,9 @@ export default function StudioScreen() {
           <View style={styles.resultBox}>
             <Text style={styles.resultLabel}>✨ 생성된 인사말</Text>
             <Text style={styles.resultText}>{greeting}</Text>
+            <TouchableOpacity style={styles.speakButton} onPress={handleSpeak}>
+              <Text style={styles.speakButtonText}>🔊 대본 들어보기</Text>
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
@@ -248,5 +257,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 26,
     color: '#1A1A2E',
+  },
+  speakButton: {
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    backgroundColor: '#EDE9FE',
+    alignSelf: 'center',
+    borderWidth: 1,
+    borderColor: '#C4B5FD',
+  },
+  speakButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#7C3AED',
   },
 });

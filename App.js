@@ -7,7 +7,6 @@ import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import DashboardScreen from './src/screens/DashboardScreen';
 import CreatorsStack from './src/navigation/CreatorsStack';
-import StudioScreen from './src/screens/StudioScreen';
 
 // 폰트 로딩 완료 전까지 스플래시 자동 숨김 방지
 SplashScreen.preventAutoHideAsync();
@@ -60,15 +59,6 @@ export default function App() {
               headerShown: false,
               tabBarIcon: ({ color, size }) => (
                 <Ionicons name="people" color={color} size={size} />
-              ),
-            }}
-          />
-          <Tab.Screen
-            name="스튜디오"
-            component={StudioScreen}
-            options={{
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="videocam" color={color} size={size} />
               ),
             }}
           />

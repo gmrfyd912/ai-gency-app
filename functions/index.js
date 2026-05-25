@@ -124,6 +124,34 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
+// 크리에이터 숏폼 콘텐츠(대본) 생성
+// ────────────────────────────────────────────────────────────
+exports.generateContent = onCall(async (request) => {
+  const openai = new OpenAI();
+  const { name, prompt } = request.data;
+
+  if (!name || !prompt) {
+    throw new HttpsError("invalid-argument", "name과 prompt는 필수입니다.");
+  }
+
+  const userPrompt = `당신은 ${prompt} 성격을 가진 크리에이터 '${name}'입니다. 당신의 성격과 전문 분야에 딱 맞는 1분 분량의 숏폼 비디오 대본을 작성하세요. 결과물은 [영상 제목], [장면 1: 화면 연출 지시문 / 대사], [장면 2...] 형태로 가독성 좋게 포맷팅하여 텍스트로 반환하세요.`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: userPrompt }],
+      temperature: 0.9,
+    });
+
+    return { content: completion.choices[0].message.content };
+  } catch (error) {
+    console.error("콘텐츠 생성 오류:", error);
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", `콘텐츠 생성 실패: ${error.message}`);
+  }
+});
+
+// ────────────────────────────────────────────────────────────
 // 직접 입력 분야 기반 AI 페르소나 초안 생성
 // ────────────────────────────────────────────────────────────
 exports.generatePersonaDraft = onCall(async (request) => {

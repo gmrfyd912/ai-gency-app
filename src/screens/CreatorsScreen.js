@@ -42,18 +42,23 @@ export default function CreatorsScreen({ navigation }) {
             </View>
           }
           renderItem={({ item }) => (
-            <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => navigation.navigate('CreatorStudio', { creator: item })}
+              activeOpacity={0.75}
+            >
               <View style={styles.cardHeader}>
                 {item.category ? (
                   <Text style={styles.categoryBadge}>{item.category}</Text>
                 ) : null}
+                <Text style={styles.cardArrow}>›</Text>
               </View>
               <Text style={styles.cardName}>{item.name}</Text>
               <Text style={styles.cardPersona} numberOfLines={2}>{item.persona}</Text>
               {item.voice ? (
                 <Text style={styles.cardVoice}>🎙 {item.voice}</Text>
               ) : null}
-            </View>
+            </TouchableOpacity>
           )}
         />
       )}
@@ -96,7 +101,8 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
-  cardHeader: { flexDirection: 'row', marginBottom: 6 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  cardArrow: { marginLeft: 'auto', fontSize: 20, color: '#C4C4C4', lineHeight: 22 },
   categoryBadge: {
     backgroundColor: '#EBF4FF',
     color: '#4A90E2',

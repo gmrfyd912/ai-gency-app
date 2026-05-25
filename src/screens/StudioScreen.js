@@ -1,276 +1,269 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Button,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Speech from 'expo-speech';
 import { httpsCallable } from 'firebase/functions';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { functions, db } from '../services/firebase';
+import { functions } from '../services/firebase';
 
-const generateGreetingFn = httpsCallable(functions, 'generateGreeting');
+const generateContentFn = httpsCallable(functions, 'generateContent');
 
-export default function StudioScreen() {
-  const [creators, setCreators] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
-  const [name, setName] = useState('');
-  const [persona, setPersona] = useState('');
-  const [greeting, setGreeting] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'creators'), (snapshot) => {
-      setCreators(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-    });
-    return unsubscribe;
-  }, []);
-
-  const handleSelectCreator = (creator) => {
-    setSelectedId(creator.id);
-    setName(creator.name);
-    setPersona(creator.persona);
-    setGreeting('');
-  };
-
-  const handleSpeak = () => {
-    Speech.stop();
-    Speech.speak(greeting, { language: 'ko-KR', rate: 0.9, pitch: 1.0 });
-  };
+export default function StudioScreen({ route }) {
+  const { creator } = route.params;
+  const [content, setContent] = useState('');
+  const [generating, setGenerating] = useState(false);
 
   const handleGenerate = async () => {
-    if (!name.trim() || !persona.trim()) {
-      Alert.alert('입력 오류', '크리에이터 이름과 성격을 모두 입력해주세요.');
-      return;
-    }
-
-    setLoading(true);
-    setGreeting('');
-
+    setGenerating(true);
+    setContent('');
     try {
-      const result = await generateGreetingFn({ name: name.trim(), persona: persona.trim() });
-      setGreeting(result.data.greeting);
-    } catch (error) {
-      Alert.alert('오류 발생', error.message || 'AI 호출 중 문제가 발생했습니다.');
+      const result = await generateContentFn({
+        name: creator.name,
+        prompt: creator.persona,
+      });
+      setContent(result.data.content);
+    } catch (e) {
+      Alert.alert('생성 실패', e.message);
     } finally {
-      setLoading(false);
+      setGenerating(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView contentContainerStyle={styles.inner} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>🎬 AI 영상 스튜디오</Text>
-        <Text style={styles.subtitle}>크리에이터를 선택하거나 직접 입력하여 AI 인사말을 생성하세요.</Text>
+    <ScrollView style={styles.container} contentContainerStyle={styles.inner}>
 
-        {creators.length > 0 && (
-          <View style={styles.chipSection}>
-            <Text style={styles.chipLabel}>소속 크리에이터</Text>
-            <FlatList
-              data={creators}
-              keyExtractor={(item) => item.id}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.chipList}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.chip,
-                    selectedId === item.id && styles.chipSelected,
-                  ]}
-                  onPress={() => handleSelectCreator(item)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      selectedId === item.id && styles.chipTextSelected,
-                    ]}
-                  >
-                    {item.name}
-                  </Text>
-                </TouchableOpacity>
-              )}
-            />
+      {/* ── 크리에이터 프로필 헤더 ── */}
+      <View style={styles.profileCard}>
+        <View style={styles.profileTop}>
+          <View style={styles.avatarCircle}>
+            <Text style={styles.avatarText}>
+              {creator.name ? creator.name.charAt(0) : '?'}
+            </Text>
           </View>
-        )}
-
-        <View style={styles.form}>
-          <TextInput
-            style={styles.input}
-            placeholder="크리에이터 이름"
-            value={name}
-            onChangeText={(text) => { setName(text); setSelectedId(null); }}
-          />
-          <TextInput
-            style={[styles.input, styles.inputMulti]}
-            placeholder="성격 / 특징"
-            value={persona}
-            onChangeText={(text) => { setPersona(text); setSelectedId(null); }}
-            multiline
-          />
-          <Button
-            title="AI 인사말 대본 생성"
-            onPress={handleGenerate}
-            color="#7C3AED"
-            disabled={loading}
-          />
+          <View style={styles.profileInfo}>
+            {creator.category ? (
+              <Text style={styles.categoryBadge}>{creator.category}</Text>
+            ) : null}
+            <Text style={styles.creatorName}>{creator.name}</Text>
+            {creator.voice ? (
+              <Text style={styles.voiceTag}>🎙 {creator.voice}</Text>
+            ) : null}
+          </View>
         </View>
+        {creator.persona ? (
+          <Text style={styles.personaText} numberOfLines={3}>
+            {creator.persona}
+          </Text>
+        ) : null}
+      </View>
 
-        {loading && (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="large" color="#7C3AED" />
-            <Text style={styles.loadingText}>AI가 대본을 작성 중입니다...</Text>
-          </View>
+      {/* ── 콘텐츠 생성 버튼 ── */}
+      <TouchableOpacity
+        style={[styles.generateBtn, generating && styles.generateBtnDisabled]}
+        onPress={handleGenerate}
+        disabled={generating}
+        activeOpacity={0.85}
+      >
+        {generating ? (
+          <ActivityIndicator color="#fff" size="small" />
+        ) : (
+          <>
+            <Text style={styles.generateBtnIcon}>🎬</Text>
+            <Text style={styles.generateBtnText}>오늘의 숏폼 콘텐츠 생성하기</Text>
+          </>
         )}
+      </TouchableOpacity>
 
-        {!!greeting && !loading && (
-          <View style={styles.resultBox}>
-            <Text style={styles.resultLabel}>✨ 생성된 인사말</Text>
-            <Text style={styles.resultText}>{greeting}</Text>
-            <TouchableOpacity style={styles.speakButton} onPress={handleSpeak}>
-              <Text style={styles.speakButtonText}>🔊 대본 들어보기</Text>
+      {/* ── 생성 중 로딩 ── */}
+      {generating && (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="large" color="#4A90E2" />
+          <Text style={styles.loadingTitle}>AI가 대본을 작성 중입니다</Text>
+          <Text style={styles.loadingSubtitle}>{creator.name}의 세계관을 담는 중...</Text>
+        </View>
+      )}
+
+      {/* ── 생성된 대본 카드 ── */}
+      {content && !generating ? (
+        <View style={styles.contentCard}>
+          <View style={styles.contentCardHeader}>
+            <Text style={styles.contentCardIcon}>📄</Text>
+            <Text style={styles.contentCardTitle}>생성된 대본</Text>
+            <TouchableOpacity
+              style={styles.regenBtn}
+              onPress={handleGenerate}
+            >
+              <Text style={styles.regenBtnText}>↺ 재생성</Text>
             </TouchableOpacity>
           </View>
-        )}
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <View style={styles.divider} />
+          <Text style={styles.contentText}>{content}</Text>
+        </View>
+      ) : null}
+
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F3FF',
-  },
-  inner: {
-    padding: 20,
-    paddingBottom: 40,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1A1A2E',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
+  container: { flex: 1, backgroundColor: '#F5F7FA' },
+  inner: { padding: 16, paddingBottom: 48 },
+
+  // 프로필 카드
+  profileCard: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    padding: 18,
     marginBottom: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 4,
   },
-  chipSection: {
-    marginBottom: 16,
+  profileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 14,
   },
-  chipLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#7C3AED',
-    marginBottom: 8,
+  avatarCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#4A90E2',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  chipList: {
-    gap: 8,
-    paddingVertical: 2,
-  },
-  chip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#EDE9FE',
-    borderWidth: 1,
-    borderColor: '#C4B5FD',
-  },
-  chipSelected: {
-    backgroundColor: '#7C3AED',
-    borderColor: '#7C3AED',
-  },
-  chipText: {
-    fontSize: 14,
-    color: '#7C3AED',
-    fontWeight: '500',
-  },
-  chipTextSelected: {
+  avatarText: {
+    fontSize: 22,
+    fontWeight: '800',
     color: '#fff',
   },
-  form: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    gap: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#D1C4E9',
+  profileInfo: { flex: 1, gap: 3 },
+  categoryBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#EBF4FF',
+    color: '#4A90E2',
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: 8,
-    padding: 10,
-    fontSize: 15,
-    backgroundColor: '#FAFAFA',
+    overflow: 'hidden',
   },
-  inputMulti: {
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
-  loadingBox: {
-    alignItems: 'center',
-    marginTop: 32,
-    gap: 10,
-  },
-  loadingText: {
-    color: '#7C3AED',
-    fontSize: 14,
-  },
-  resultBox: {
-    marginTop: 28,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 20,
-    borderLeftWidth: 4,
-    borderLeftColor: '#7C3AED',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  resultLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#7C3AED',
-    marginBottom: 10,
-  },
-  resultText: {
-    fontSize: 16,
-    lineHeight: 26,
+  creatorName: {
+    fontSize: 20,
+    fontWeight: '800',
     color: '#1A1A2E',
   },
-  speakButton: {
-    marginTop: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    backgroundColor: '#EDE9FE',
-    alignSelf: 'center',
-    borderWidth: 1,
-    borderColor: '#C4B5FD',
+  voiceTag: {
+    fontSize: 12,
+    color: '#6B7280',
   },
-  speakButtonText: {
+  personaText: {
+    fontSize: 13,
+    color: '#6B7280',
+    lineHeight: 20,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+    padding: 10,
+  },
+
+  // 생성 버튼
+  generateBtn: {
+    backgroundColor: '#4A90E2',
+    borderRadius: 16,
+    paddingVertical: 20,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 20,
+    shadowColor: '#4A90E2',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    minHeight: 66,
+  },
+  generateBtnDisabled: {
+    opacity: 0.65,
+    shadowOpacity: 0.1,
+  },
+  generateBtnIcon: { fontSize: 22 },
+  generateBtnText: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.3,
+  },
+
+  // 로딩
+  loadingBox: {
+    alignItems: 'center',
+    paddingVertical: 36,
+    gap: 12,
+  },
+  loadingTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1A1A2E',
+  },
+  loadingSubtitle: {
+    fontSize: 13,
+    color: '#9CA3AF',
+  },
+
+  // 대본 카드
+  contentCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.07,
+    shadowRadius: 10,
+    elevation: 4,
+    borderLeftWidth: 4,
+    borderLeftColor: '#4A90E2',
+  },
+  contentCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 12,
+  },
+  contentCardIcon: { fontSize: 18 },
+  contentCardTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1A1A2E',
+  },
+  regenBtn: {
+    backgroundColor: '#EBF4FF',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  regenBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4A90E2',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#F3F4F6',
+    marginBottom: 14,
+  },
+  contentText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#7C3AED',
+    lineHeight: 24,
+    color: '#374151',
   },
 });

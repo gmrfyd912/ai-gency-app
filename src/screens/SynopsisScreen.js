@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -25,10 +26,12 @@ const episodesCol = (creatorId, seriesId) =>
 export default function SynopsisScreen({ route, navigation }) {
   const { creator } = route.params;
 
-  const [synopsis, setSynopsis]                   = useState('');
-  const [originalReference, setOriginalReference] = useState('');
-  const [loadingSynopsis, setLoadingSynopsis]     = useState(false);
-  const [generatingScenes, setGeneratingScenes]   = useState(false);
+  const [synopsis, setSynopsis]                         = useState('');
+  const [originalTitle, setOriginalTitle]               = useState('');
+  const [originalReference, setOriginalReference]       = useState('');
+  const [originalReferenceUrl, setOriginalReferenceUrl] = useState(null);
+  const [loadingSynopsis, setLoadingSynopsis]           = useState(false);
+  const [generatingScenes, setGeneratingScenes]         = useState(false);
   const inputRef = useRef(null);
 
   const isLocked = loadingSynopsis || generatingScenes;
@@ -41,11 +44,15 @@ export default function SynopsisScreen({ route, navigation }) {
   const callGenerateSynopsis = async () => {
     setLoadingSynopsis(true);
     setSynopsis('');
+    setOriginalTitle('');
     setOriginalReference('');
+    setOriginalReferenceUrl(null);
     try {
       const result = await generateSynopsisFn({ name: creator.name, persona: creator.persona });
       setSynopsis(result.data.synopsis);
+      setOriginalTitle(result.data.originalTitle ?? '');
       setOriginalReference(result.data.originalReference ?? '');
+      setOriginalReferenceUrl(result.data.originalReferenceUrl ?? null);
     } catch (e) {
       Alert.alert('시놉시스 생성 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
     } finally {
@@ -69,7 +76,9 @@ export default function SynopsisScreen({ route, navigation }) {
       const seriesRef = await addDoc(seriesCol(creator.id), {
         title: newScript.title,
         fullSynopsis: synopsis,
+        originalTitle,
         originalReference,
+        originalReferenceUrl,
         createdAt: serverTimestamp(),
       });
 
@@ -121,12 +130,21 @@ export default function SynopsisScreen({ route, navigation }) {
         </View>
 
         {/* ── 원본 출처 배지 ── */}
-        {originalReference ? (
+        {(originalTitle || originalReference) ? (
           <View style={styles.refBadge}>
             <Text style={styles.refIcon}>🔍</Text>
             <View style={styles.refTextBox}>
-              <Text style={styles.refLabel}>참고 원본 플롯</Text>
-              <Text style={styles.refValue}>{originalReference}</Text>
+              <Text style={styles.refLabel}>AI 검색 · 참고 원본 플롯</Text>
+              {originalTitle ? <Text style={styles.refTitle}>{originalTitle}</Text> : null}
+              {originalReference ? <Text style={styles.refValue}>{originalReference}</Text> : null}
+              {originalReferenceUrl ? (
+                <TouchableOpacity
+                  onPress={() => Linking.openURL(originalReferenceUrl).catch(() => {})}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.refUrl}>🔗 원본 링크 열기</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         ) : null}
@@ -251,7 +269,9 @@ const styles = StyleSheet.create({
   refIcon: { fontSize: 16, marginTop: 1 },
   refTextBox: { flex: 1 },
   refLabel: { fontSize: 10, fontWeight: '700', color: '#D97706', letterSpacing: 0.5, marginBottom: 3 },
-  refValue: { fontSize: 13, color: '#78350F', lineHeight: 18 },
+  refTitle: { fontSize: 13, fontWeight: '800', color: '#78350F', marginBottom: 2 },
+  refValue: { fontSize: 12, color: '#92400E', lineHeight: 17 },
+  refUrl: { fontSize: 11, color: '#B45309', textDecorationLine: 'underline', marginTop: 5 },
 
   synopsisCard: {
     backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12,

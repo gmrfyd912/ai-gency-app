@@ -132,8 +132,45 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// 바이럴 검증 플롯 각색 기반 4~10부작 완결형 시리즈 시놉시스 생성
-// JSON { synopsis, originalReference } 반환
+// Tavily Search API 헬퍼 — 바이럴 스토리 실시간 검색
+// SEARCH_API_KEY 는 functions/.env 에서 로드
+// ────────────────────────────────────────────────────────────
+async function searchTrendingStories(query) {
+  const apiKey = process.env.SEARCH_API_KEY;
+  if (!apiKey) throw new Error("SEARCH_API_KEY가 설정되지 않았습니다.");
+
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: apiKey,
+      query,
+      search_depth: "advanced",
+      include_answer: true,
+      include_raw_content: false,
+      max_results: 5,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Tavily API 오류 (${res.status}): ${err.detail ?? err.message ?? "알 수 없는 오류"}`);
+  }
+
+  const data = await res.json();
+  return {
+    answer: data.answer ?? "",
+    results: (data.results ?? []).slice(0, 4).map((r) => ({
+      title: r.title ?? "",
+      url: r.url ?? "",
+      snippet: (r.content ?? "").slice(0, 500),
+    })),
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// 자율 검색 AI 에이전트: Function Calling → 웹 검색 → 각색
+// JSON { synopsis, originalTitle, originalReference, originalReferenceUrl } 반환
 // ────────────────────────────────────────────────────────────
 exports.generateSynopsis = onCall(
   { timeoutSeconds: 90, memory: "256MiB" },
@@ -145,50 +182,124 @@ exports.generateSynopsis = onCall(
       throw new HttpsError("invalid-argument", "name과 persona는 필수입니다.");
     }
 
-    const systemPrompt = `너는 틱톡, 유튜브 쇼츠, 인스타그램 릴스에서 수백만 조회수를 기록한 숏폼 콘텐츠의 플롯을 전문적으로 수집·분석하는 바이럴 스토리 아카이버다.
-반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.
+    // ── OpenAI Function Calling 도구 정의 ──────────────────────
+    const SEARCH_TOOL = {
+      type: "function",
+      function: {
+        name: "search_trending_stories",
+        description:
+          "틱톡·유튜브 쇼츠·인스타그램 릴스·온라인 커뮤니티(에펨코리아·블라인드·네이트판)에서 현재 바이럴 중인 레전드 썰·사이다 스토리·역전 드라마를 웹에서 실시간 검색한다. 각색 베이스를 찾을 때 반드시 먼저 호출한다.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description:
+                "검색 쿼리 (한국어). 크리에이터 페르소나에 어울리는 바이럴 스토리 유형 명시. 예: '직장 갑질 사이다 썰 레전드', '연인 배신 역전 이야기 바이럴'",
+            },
+          },
+          required: ["query"],
+        },
+      },
+    };
+
+    const systemPrompt = `너는 틱톡, 유튜브 쇼츠, 인스타그램 릴스에서 수백만 조회수를 기록한 숏폼 콘텐츠 플롯을 전문으로 수집·분석하는 바이럴 스토리 아카이버다.
 
 【핵심 원칙 — 절대 준수】
-1. 절대로 처음부터 새 스토리를 창작하지 마라. 이미 대중에게 인기가 검증된 플롯 뼈대를 반드시 베이스로 가져와라.
-   검증된 플롯 유형 예시: 직장 갑질 사이다 반전, 연인 배신과 각성, 가족 비밀 폭로 막장극, 신데렐라 역전, 환승연애 삼각관계 폭발, 전 연인 마주침 썰, 집단 괴롭힘 복수극, 부모님 몰래 연애 들킴 사건 등
-   — 위 예시에 국한하지 말고 해당 크리에이터 분야에서 실제 바이럴된 패턴을 적극 활용하라.
-2. 가져온 뼈대를 크리에이터의 성별·나이·직업·성향에 완벽히 맞춰 각색하라. 원본이 연상되지 않을 정도로 디테일을 바꿔라.
-3. 억지스럽고 작위적인 전개 금지. "실제 있을 법한 얘기"여야 한다.`;
+1. 작업 시작 시 반드시 search_trending_stories 도구를 먼저 호출하여 실제 인터넷의 바이럴 스토리를 검색하라.
+2. 훈련 데이터만으로 스토리를 창작하는 것은 금지. 검색 도구를 먼저 써야 한다.
+3. 검색 결과를 베이스로 크리에이터 페르소나에 맞게 각색하라. 원본 출처 URL을 반드시 기록하라.
+4. 반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.`;
 
     const userPrompt = `각색 대상 크리에이터:
 이름: ${name}
 페르소나: ${persona}
 
-위 크리에이터를 주인공으로 한 4~10부작 완결형 숏폼 시리즈를 다음 JSON 형식으로 기획하라:
+이 크리에이터를 주인공으로 한 4~10부작 완결형 숏폼 시리즈를 기획하라.
+먼저 search_trending_stories 도구를 호출하여 적합한 바이럴 스토리를 검색하고, 결과를 바탕으로 각색하라.`;
+
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ];
+
+    try {
+      // ── Step 1: AI가 검색 도구 자율 호출 (auto) ───────────────
+      const step1 = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages,
+        tools: [SEARCH_TOOL],
+        tool_choice: "auto",
+      });
+
+      const assistantMsg = step1.choices[0].message;
+      messages.push(assistantMsg);
+      console.log("[generateSynopsis] Step1 finish_reason:", step1.choices[0].finish_reason);
+
+      // ── Step 2: 검색 도구가 호출된 경우 실제 웹 검색 실행 ──────
+      for (const toolCall of assistantMsg.tool_calls ?? []) {
+        if (toolCall.function.name !== "search_trending_stories") continue;
+
+        let args;
+        try { args = JSON.parse(toolCall.function.arguments); } catch (_) { args = {}; }
+        const query = args.query ?? `${persona} 바이럴 스토리 레전드 썰`;
+        console.log("[generateSynopsis] 검색 쿼리:", query);
+
+        let searchContent;
+        try {
+          const result = await searchTrendingStories(query);
+          searchContent = JSON.stringify(result);
+          console.log("[generateSynopsis] 검색 완료, 결과 수:", result.results?.length);
+        } catch (e) {
+          console.warn("[generateSynopsis] 검색 실패, 폴백:", e.message);
+          searchContent = JSON.stringify({ answer: "", results: [] });
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: searchContent,
+        });
+      }
+
+      // ── Step 3: 검색 결과 기반 시놉시스 JSON 최종 생성 ─────────
+      messages.push({
+        role: "user",
+        content: `검색 결과를 바탕으로 아래 JSON 형식으로 ${name}의 4~10부작 완결형 시리즈를 기획하라. (검색 결과가 없으면 검증된 바이럴 패턴 기반으로 작성)
 
 {
-  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화)의 줄거리를 서술한 텍스트. 500~800자 이내.",
-  "originalReference": "참고한 인기 플롯의 출처 (예: '유튜브 쇼츠 - 직장 갑질 사이다 썰', '틱톡 - 환승연애 폭로 시리즈'). 실제 존재하지 않는 URL은 절대 금지 — 플랫폼명과 키워드만 명시."
+  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화) 줄거리. 500~800자.",
+  "originalTitle": "참고한 원본 스토리의 제목 또는 핵심 키워드 (없으면 대표 바이럴 패턴명)",
+  "originalReference": "원본 플롯 출처 (플랫폼명 + 핵심 키워드. 예: '유튜브 쇼츠 - 직장 갑질 사이다 썰')",
+  "originalReferenceUrl": "검색에서 발견한 실제 URL (없으면 null)"
 }
 
 시리즈 요구사항:
 - 편수 4~10편, 기승전결 완결형 (열린 결말 금지)
-- 각 화 말미에 강력한 클리프행어 (마지막 화 제외)
+- 각 화 말미: 강력한 클리프행어 (마지막 화 제외)
 - 마지막 화: 사이다/카타르시스 엔딩 필수
-- 각 편: 숏폼 1분에 최적화된 단일 사건/감정 집중`;
+- 크리에이터 '${name}'의 페르소나에 완벽히 맞춘 각색`,
+      });
 
-    try {
-      const completion = await openai.chat.completions.create({
+      const step3 = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
+        messages,
         temperature: 0.85,
-        max_tokens: 1200,
+        max_tokens: 1500,
       });
-      const parsed = JSON.parse(completion.choices[0].message.content);
-      if (!parsed.synopsis || !parsed.originalReference) {
+
+      const parsed = JSON.parse(step3.choices[0].message.content);
+      if (!parsed.synopsis) {
         throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
       }
-      console.log("[generateSynopsis] 성공, synopsis 길이:", parsed.synopsis.length);
-      return { synopsis: parsed.synopsis, originalReference: parsed.originalReference };
+      console.log("[generateSynopsis] 완료, synopsis 길이:", parsed.synopsis.length);
+      return {
+        synopsis: parsed.synopsis,
+        originalTitle: parsed.originalTitle ?? "",
+        originalReference: parsed.originalReference ?? "",
+        originalReferenceUrl: parsed.originalReferenceUrl ?? null,
+      };
     } catch (error) {
       console.error("[generateSynopsis] 오류:", error.message);
       if (error instanceof HttpsError) throw error;

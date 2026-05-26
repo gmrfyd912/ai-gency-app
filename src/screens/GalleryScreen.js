@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Linking,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -45,7 +46,9 @@ export default function GalleryScreen({ route, navigation }) {
               id: epDoc.id,
               seriesId: seriesDoc.id,
               seriesTitle: seriesData.title ?? '시리즈',
+              originalTitle: seriesData.originalTitle ?? '',
               originalReference: seriesData.originalReference ?? '',
+              originalReferenceUrl: seriesData.originalReferenceUrl ?? null,
               episodeNumber: ep.episodeNumber ?? 1,
               episodeTitle: ep.title ?? '',
               videoUrl: ep.videoUrl,
@@ -111,11 +114,29 @@ export default function GalleryScreen({ route, navigation }) {
             </View>
 
             {/* 원본 출처 */}
-            {item.originalReference ? (
-              <View style={styles.refRow}>
+            {(item.originalTitle || item.originalReference) ? (
+              <TouchableOpacity
+                style={styles.refRow}
+                activeOpacity={item.originalReferenceUrl ? 0.65 : 1}
+                onPress={() =>
+                  item.originalReferenceUrl &&
+                  Linking.openURL(item.originalReferenceUrl).catch(() => {})
+                }
+                disabled={!item.originalReferenceUrl}
+              >
                 <Text style={styles.refIcon}>🔍</Text>
-                <Text style={styles.refText} numberOfLines={1}>{item.originalReference}</Text>
-              </View>
+                <View style={{ flex: 1 }}>
+                  {item.originalTitle ? (
+                    <Text style={styles.refTitle} numberOfLines={1}>{item.originalTitle}</Text>
+                  ) : null}
+                  {item.originalReference ? (
+                    <Text style={styles.refText} numberOfLines={1}>{item.originalReference}</Text>
+                  ) : null}
+                  {item.originalReferenceUrl ? (
+                    <Text style={styles.refLink}>🔗 원본 링크</Text>
+                  ) : null}
+                </View>
+              </TouchableOpacity>
             ) : null}
 
             {/* 비디오 플레이어 */}
@@ -174,9 +195,11 @@ const styles = StyleSheet.create({
   epBadge: { backgroundColor: '#7C3AED', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   epBadgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
 
-  refRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingBottom: 10 },
-  refIcon: { fontSize: 12 },
-  refText: { fontSize: 11, color: '#9CA3AF', flex: 1 },
+  refRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 16, paddingBottom: 10 },
+  refIcon: { fontSize: 12, marginTop: 1 },
+  refTitle: { fontSize: 12, fontWeight: '700', color: '#D1D5DB', marginBottom: 1 },
+  refText: { fontSize: 11, color: '#9CA3AF' },
+  refLink: { fontSize: 10, color: '#818CF8', textDecorationLine: 'underline', marginTop: 3 },
 
   videoPlayer: { width: '100%', aspectRatio: 9 / 16, backgroundColor: '#000' },
 });

@@ -147,7 +147,7 @@ async function searchTrendingStories(query) {
       query,
       search_depth: "advanced",
       include_answer: true,
-      include_raw_content: false,
+      include_raw_content: true,
       max_results: 5,
     }),
   });
@@ -160,10 +160,11 @@ async function searchTrendingStories(query) {
   const data = await res.json();
   return {
     answer: data.answer ?? "",
-    results: (data.results ?? []).slice(0, 4).map((r) => ({
+    // raw_content 우선, 없으면 content 사용 — 3000자로 트림하여 컨텍스트 전달
+    results: (data.results ?? []).slice(0, 3).map((r) => ({
       title: r.title ?? "",
       url: r.url ?? "",
-      snippet: (r.content ?? "").slice(0, 500),
+      content: (r.raw_content ?? r.content ?? "").slice(0, 3000),
     })),
   };
 }
@@ -203,13 +204,20 @@ exports.generateSynopsis = onCall(
       },
     };
 
-    const systemPrompt = `너는 틱톡, 유튜브 쇼츠, 인스타그램 릴스에서 수백만 조회수를 기록한 숏폼 콘텐츠 플롯을 전문으로 수집·분석하는 바이럴 스토리 아카이버다.
+    const systemPrompt = `너는 바이럴 스토리 각색 전문가다. 검색된 원본 스토리의 재미 요소를 100% 살려 N부작 숏폼 시리즈로 구조화하는 것이 유일한 임무다.
 
-【핵심 원칙 — 절대 준수】
-1. 작업 시작 시 반드시 search_trending_stories 도구를 먼저 호출하여 실제 인터넷의 바이럴 스토리를 검색하라.
-2. 훈련 데이터만으로 스토리를 창작하는 것은 금지. 검색 도구를 먼저 써야 한다.
-3. 검색 결과를 베이스로 크리에이터 페르소나에 맞게 각색하라. 원본 출처 URL을 반드시 기록하라.
-4. 반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.`;
+【절대 금지 — 위반 시 실패 처리】
+- 검색된 원본 본문을 무시하고 뻔하고 건전한 새 이야기를 지어내는 행위
+- 원본의 자극적이거나 유머러스한 갈등 포인트를 "순화"하여 밋밋하게 만드는 행위
+- 원본에 없는 AI식 클리셰("알고 보니 오해였다", "사실 다 계획이었다", "서로 화해했다") 임의 삽입
+- 검색 도구를 호출하지 않고 훈련 데이터만으로 이야기를 창작하는 행위
+
+【반드시 지켜야 할 원칙】
+1. 작업 시작 시 반드시 search_trending_stories 도구를 먼저 호출하여 원본 본문(raw_content)을 확보하라.
+2. 확보한 원본 본문의 구체적 사건·갈등 포인트·인물 특징·결말을 그대로 보존하라.
+3. 너의 역할은 오직 "호흡 조절과 편수 구조화"뿐이다: 원본을 N화로 나누고 각 화 말미에 클리프행어를 배치하라.
+4. 원본이 막장이면 막장으로, 사이다면 사이다로, 웃기면 웃기게 — 원본의 톤과 강도를 그대로 유지하라.
+5. 반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.`;
 
     const userPrompt = `각색 대상 크리에이터:
 이름: ${name}
@@ -265,20 +273,32 @@ exports.generateSynopsis = onCall(
       // ── Step 3: 검색 결과 기반 시놉시스 JSON 최종 생성 ─────────
       messages.push({
         role: "user",
-        content: `검색 결과를 바탕으로 아래 JSON 형식으로 ${name}의 4~10부작 완결형 시리즈를 기획하라. (검색 결과가 없으면 검증된 바이럴 패턴 기반으로 작성)
+        content: `위에서 검색된 원본 본문(raw_content)을 철저히 분석하여 아래 JSON 형식으로 ${name}의 시리즈를 기획하라.
+
+【JSON 반환 전 자체 검증 체크리스트 — 3가지 모두 통과해야 함】
+1. synopsis에 원본의 핵심 갈등 포인트가 3개 이상 구체적으로 살아있는가?
+2. 원본의 결말(사이다·막장·반전)이 마지막 화에 희석 없이 그대로 반영되어 있는가?
+3. 원본에서 가장 자극적이거나 웃긴 장면이 "건전하게 순화"되지 않고 보존되어 있는가?
+
+위 3가지 체크를 완료한 후 아래 JSON을 반환하라:
 
 {
-  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화) 줄거리. 500~800자.",
-  "originalTitle": "참고한 원본 스토리의 제목 또는 핵심 키워드 (없으면 대표 바이럴 패턴명)",
-  "originalReference": "원본 플롯 출처 (플랫폼명 + 핵심 키워드. 예: '유튜브 쇼츠 - 직장 갑질 사이다 썰')",
-  "originalReferenceUrl": "검색에서 발견한 실제 URL (없으면 null)"
+  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화) 줄거리. 600~900자. 각 화의 구체적 사건이 드러나야 함.",
+  "originalTitle": "원본 스토리의 실제 제목 또는 핵심 키워드",
+  "originalReference": "출처 플랫폼 + 핵심 키워드 (예: '유튜브 쇼츠 - 직장 갑질 사이다 썰')",
+  "originalReferenceUrl": "검색에서 발견한 실제 URL (없으면 null)",
+  "preservedPlotPoints": [
+    "원본에서 그대로 보존한 핵심 갈등/사건 포인트를 최소 3개 이상 명시",
+    "예: '상사가 야근 강요 후 성과는 가로챔'",
+    "예: '퇴직 당일 전사 이메일로 사이다 폭로'"
+  ]
 }
 
 시리즈 요구사항:
 - 편수 4~10편, 기승전결 완결형 (열린 결말 금지)
 - 각 화 말미: 강력한 클리프행어 (마지막 화 제외)
-- 마지막 화: 사이다/카타르시스 엔딩 필수
-- 크리에이터 '${name}'의 페르소나에 완벽히 맞춘 각색`,
+- 마지막 화: 원본 결말 기반 사이다/카타르시스 엔딩
+- 크리에이터 '${name}'의 페르소나에 맞는 인물·배경으로만 각색 (플롯은 원본 그대로)`,
       });
 
       const step3 = await openai.chat.completions.create({
@@ -293,12 +313,26 @@ exports.generateSynopsis = onCall(
       if (!parsed.synopsis) {
         throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
       }
+
+      // ── 원본 플롯 보존 검증 ────────────────────────────────────
+      const preservedPoints = Array.isArray(parsed.preservedPlotPoints)
+        ? parsed.preservedPlotPoints.filter((p) => typeof p === "string" && p.trim().length > 0)
+        : [];
+      console.log("[generateSynopsis] 보존 포인트 수:", preservedPoints.length, "/", preservedPoints);
+      if (preservedPoints.length < 2) {
+        throw new HttpsError(
+          "internal",
+          "원본 플롯 보존 검증 실패: 원본 내용이 시놉시스에 충분히 반영되지 않았습니다. 다시 시도해주세요."
+        );
+      }
+
       console.log("[generateSynopsis] 완료, synopsis 길이:", parsed.synopsis.length);
       return {
         synopsis: parsed.synopsis,
         originalTitle: parsed.originalTitle ?? "",
         originalReference: parsed.originalReference ?? "",
         originalReferenceUrl: parsed.originalReferenceUrl ?? null,
+        preservedPlotPoints: preservedPoints,
       };
     } catch (error) {
       console.error("[generateSynopsis] 오류:", error.message);

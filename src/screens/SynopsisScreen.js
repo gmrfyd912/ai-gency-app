@@ -30,6 +30,7 @@ export default function SynopsisScreen({ route, navigation }) {
   const [originalTitle, setOriginalTitle]               = useState('');
   const [originalReference, setOriginalReference]       = useState('');
   const [originalReferenceUrl, setOriginalReferenceUrl] = useState(null);
+  const [preservedPlotPoints, setPreservedPlotPoints]   = useState([]);
   const [loadingSynopsis, setLoadingSynopsis]           = useState(false);
   const [generatingScenes, setGeneratingScenes]         = useState(false);
   const inputRef = useRef(null);
@@ -47,12 +48,14 @@ export default function SynopsisScreen({ route, navigation }) {
     setOriginalTitle('');
     setOriginalReference('');
     setOriginalReferenceUrl(null);
+    setPreservedPlotPoints([]);
     try {
       const result = await generateSynopsisFn({ name: creator.name, persona: creator.persona });
       setSynopsis(result.data.synopsis);
       setOriginalTitle(result.data.originalTitle ?? '');
       setOriginalReference(result.data.originalReference ?? '');
       setOriginalReferenceUrl(result.data.originalReferenceUrl ?? null);
+      setPreservedPlotPoints(result.data.preservedPlotPoints ?? []);
     } catch (e) {
       Alert.alert('시놉시스 생성 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
     } finally {
@@ -79,6 +82,7 @@ export default function SynopsisScreen({ route, navigation }) {
         originalTitle,
         originalReference,
         originalReferenceUrl,
+        preservedPlotPoints,
         createdAt: serverTimestamp(),
       });
 
@@ -134,7 +138,7 @@ export default function SynopsisScreen({ route, navigation }) {
           <View style={styles.refBadge}>
             <Text style={styles.refIcon}>🔍</Text>
             <View style={styles.refTextBox}>
-              <Text style={styles.refLabel}>AI 검색 · 참고 원본 플롯</Text>
+              <Text style={styles.refLabel}>AI 검색 · 원본 플롯 보존 확인</Text>
               {originalTitle ? <Text style={styles.refTitle}>{originalTitle}</Text> : null}
               {originalReference ? <Text style={styles.refValue}>{originalReference}</Text> : null}
               {originalReferenceUrl ? (
@@ -144,6 +148,16 @@ export default function SynopsisScreen({ route, navigation }) {
                 >
                   <Text style={styles.refUrl}>🔗 원본 링크 열기</Text>
                 </TouchableOpacity>
+              ) : null}
+              {preservedPlotPoints.length > 0 ? (
+                <View style={styles.plotPointsBox}>
+                  <Text style={styles.plotPointsLabel}>✅ 보존된 핵심 갈등 포인트</Text>
+                  {preservedPlotPoints.map((pt, i) => (
+                    <Text key={i} style={styles.plotPoint} numberOfLines={2}>
+                      • {pt}
+                    </Text>
+                  ))}
+                </View>
               ) : null}
             </View>
           </View>
@@ -272,6 +286,9 @@ const styles = StyleSheet.create({
   refTitle: { fontSize: 13, fontWeight: '800', color: '#78350F', marginBottom: 2 },
   refValue: { fontSize: 12, color: '#92400E', lineHeight: 17 },
   refUrl: { fontSize: 11, color: '#B45309', textDecorationLine: 'underline', marginTop: 5 },
+  plotPointsBox: { marginTop: 8, gap: 3 },
+  plotPointsLabel: { fontSize: 10, fontWeight: '700', color: '#059669', marginBottom: 2 },
+  plotPoint: { fontSize: 11, color: '#065F46', lineHeight: 16 },
 
   synopsisCard: {
     backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12,

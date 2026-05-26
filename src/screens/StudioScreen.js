@@ -12,21 +12,18 @@ import {
 } from 'react-native';
 import { Audio, ResizeMode, Video } from 'expo-av';
 import {
-  addDoc,
   collection,
   doc,
   getDocs,
   limit,
   orderBy,
   query,
-  serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
 // ── Cloud Function 클라이언트 ─────────────────────────────────
-const generateContentFn    = httpsCallable(functions, 'generateContent');
 const generateSceneImageFn = httpsCallable(functions, 'generateSceneImage', { timeout: 90000 });
 const generateSceneAudioFn = httpsCallable(functions, 'generateSceneAudio');
 const generateFinalVideoFn = httpsCallable(functions, 'generateFinalVideo', { timeout: 300000 });
@@ -50,12 +47,11 @@ const buildScenesPayload = (scenes, sceneImages, sceneAudios, overrides = {}) =>
     audioUri: overrides.audioIdx === i ? overrides.audioUri : (sceneAudios[i] ?? null),
   }));
 
-export default function StudioScreen({ route }) {
+export default function StudioScreen({ route, navigation }) {
   const { creator } = route.params;
 
   // ── 대본·이미지 상태 ─────────────────────────────────────
   const [script, setScript]               = useState(null);
-  const [generating, setGenerating]       = useState(false);
   const [sceneImages, setSceneImages]     = useState({});
   const [sceneLoadingIdx, setSceneLoadingIdx] = useState(null);
   const [modalImageUrl, setModalImageUrl] = useState(null);
@@ -73,6 +69,25 @@ export default function StudioScreen({ route }) {
   // ── 영상 합성 상태 ────────────────────────────────────────
   const [synthesizing, setSynthesizing] = useState(false);
   const [videoUrl, setVideoUrl]         = useState(null);
+
+  // ── SynopsisScreen에서 씬 분할 완료 후 전달된 신규 에피소드 수신 ──
+  useEffect(() => {
+    const ep = route.params?.incomingEpisode;
+    if (!ep) return;
+    if (soundRef.current) {
+      soundRef.current.stopAsync().then(() => soundRef.current?.unloadAsync());
+      soundRef.current = null;
+    }
+    setPlayingIdx(null);
+    setVideoUrl(null);
+    setSynthesizing(false);
+    setSceneLoadingIdx(null);
+    setAudioDubbingIdx(null);
+    setCurrentEpisodeId(ep.id);
+    setScript({ title: ep.title, scenes: ep.scenes });
+    setSceneImages({});
+    setSceneAudios({});
+  }, [route.params?.incomingEpisode]);
 
   // ── 마운트: Audio 모드 설정 + 최신 에피소드 로드 ──────────
   useEffect(() => {
@@ -132,39 +147,6 @@ export default function StudioScreen({ route }) {
       });
     } catch (e) {
       console.error('Firestore 저장 실패:', e.message);
-    }
-  };
-
-  // ── 대본 생성 + Firestore 저장 ───────────────────────────
-  const handleGenerate = async () => {
-    setGenerating(true);
-    setScript(null);
-    setSceneImages({});
-    setSceneAudios({});
-    setSceneLoadingIdx(null);
-    setCurrentEpisodeId(null);
-    setVideoUrl(null);
-    setSynthesizing(false);
-    if (soundRef.current) {
-      await soundRef.current.stopAsync();
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
-    setPlayingIdx(null);
-    try {
-      const result = await generateContentFn({ name: creator.name, prompt: creator.persona });
-      const newScript = { title: result.data.title, scenes: result.data.scenes };
-      setScript(newScript);
-      const episodeRef = await addDoc(episodesCol(creator.id), {
-        title: newScript.title,
-        scenes: newScript.scenes.map((s) => ({ ...s, imageUri: null, audioUri: null })),
-        createdAt: serverTimestamp(),
-      });
-      setCurrentEpisodeId(episodeRef.id);
-    } catch (e) {
-      Alert.alert('생성 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
-    } finally {
-      setGenerating(false);
     }
   };
 
@@ -286,7 +268,7 @@ export default function StudioScreen({ route }) {
     <View style={styles.root}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.inner, script && !generating && styles.innerWithFooter]}
+        contentContainerStyle={[styles.inner, script && styles.innerWithFooter]}
       >
         {/* ── 크리에이터 프로필 ── */}
         <View style={styles.profileCard}>
@@ -309,23 +291,16 @@ export default function StudioScreen({ route }) {
           ) : null}
         </View>
 
-        {/* ── 생성 버튼 ── */}
+        {/* ── 생성 버튼 (SynopsisScreen으로 이동) ── */}
         <TouchableOpacity
-          style={[styles.generateBtn, generating && styles.generateBtnDisabled]}
-          onPress={handleGenerate}
-          disabled={generating}
+          style={styles.generateBtn}
+          onPress={() => navigation.navigate('Synopsis', { creator })}
           activeOpacity={0.85}
         >
-          {generating ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <>
-              <Text style={styles.generateBtnIcon}>🎬</Text>
-              <Text style={styles.generateBtnText}>
-                {script ? '새 대본 생성하기' : '오늘의 숏폼 콘텐츠 생성하기'}
-              </Text>
-            </>
-          )}
+          <Text style={styles.generateBtnIcon}>🎬</Text>
+          <Text style={styles.generateBtnText}>
+            {script ? '새 대본 생성하기' : '오늘의 숏폼 콘텐츠 생성하기'}
+          </Text>
         </TouchableOpacity>
 
         {currentEpisodeId ? (
@@ -334,22 +309,16 @@ export default function StudioScreen({ route }) {
           </View>
         ) : null}
 
-        {/* ── 생성 중 로딩 ── */}
-        {generating && (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="large" color="#4A90E2" />
-            <Text style={styles.loadingTitle}>AI가 대본을 작성 중입니다</Text>
-            <Text style={styles.loadingSubtitle}>{creator.name}의 세계관을 담는 중...</Text>
-          </View>
-        )}
-
         {/* ── 대본 완성 ── */}
-        {script && !generating ? (
+        {script ? (
           <>
             <View style={styles.scriptTitleCard}>
               <View style={styles.scriptTitleRow}>
                 <Text style={styles.scriptTitleLabel}>📋 저장된 대본</Text>
-                <TouchableOpacity style={styles.regenBtn} onPress={handleGenerate}>
+                <TouchableOpacity
+                  style={styles.regenBtn}
+                  onPress={() => navigation.navigate('Synopsis', { creator })}
+                >
                   <Text style={styles.regenBtnText}>↺ 재생성</Text>
                 </TouchableOpacity>
               </View>
@@ -500,7 +469,7 @@ export default function StudioScreen({ route }) {
       </ScrollView>
 
       {/* ── 고정 하단 합성 버튼 ── */}
-      {script && !generating ? (
+      {script ? (
         <View style={styles.fixedFooter}>
           <TouchableOpacity
             style={[styles.synthBtn, synthesizing && styles.synthBtnDisabled]}

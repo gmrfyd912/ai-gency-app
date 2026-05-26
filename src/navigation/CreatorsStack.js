@@ -2,6 +2,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import CreatorsScreen from '../screens/CreatorsScreen';
 import CreateCreatorScreen from '../screens/CreateCreatorScreen';
 import StudioScreen from '../screens/StudioScreen';
+import SynopsisScreen from '../screens/SynopsisScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -23,6 +24,14 @@ export default function CreatorsStack() {
         name="CreateCreator"
         component={CreateCreatorScreen}
         options={{ title: '새 크리에이터 영입', ...headerCommon }}
+      />
+      <Stack.Screen
+        name="Synopsis"
+        component={SynopsisScreen}
+        options={({ route }) => ({
+          title: `${route.params?.creator?.name ?? ''} 스토리 기획`,
+          ...headerCommon,
+        })}
       />
       <Stack.Screen
         name="CreatorStudio"

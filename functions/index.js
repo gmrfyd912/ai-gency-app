@@ -132,6 +132,118 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
+// 트렌드 기반 2부작 시리즈 시놉시스 생성 (순수 텍스트 반환)
+// ────────────────────────────────────────────────────────────
+exports.generateSynopsis = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const openai = new OpenAI();
+    const { name, persona } = request.data;
+
+    if (!name || !persona) {
+      throw new HttpsError("invalid-argument", "name과 persona는 필수입니다.");
+    }
+
+    const today = new Date().toLocaleDateString("ko-KR", {
+      year: "numeric", month: "long", day: "numeric",
+    });
+
+    const userPrompt = `당신은 숏폼 콘텐츠 시리즈 기획 전문가입니다.
+오늘(${today}) 기준 틱톡·유튜브 쇼츠의 최신 트렌드를 반영하여, 아래 크리에이터의 세계관에 딱 맞는 2편 이상의 시리즈 스토리 줄거리(시놉시스)를 작성하세요.
+
+크리에이터 이름: ${name}
+크리에이터 페르소나: ${persona}
+
+요구사항:
+- 전체 시리즈 제목과 각 편(1화, 2화...)의 줄거리를 서술하라
+- 각 편은 숏폼 1분에 적합한 강렬한 훅(hook)으로 시작
+- 2편 이상이 자연스럽게 이어지도록 1화 말미에 클리프행어 포함
+- 전체 분량: 300~500자 내외의 간결한 텍스트
+- JSON 없이 순수 텍스트로만 반환
+
+'${name}'의 개성이 뚜렷이 드러나는 줄거리를 작성하라.`;
+
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: userPrompt }],
+        temperature: 0.9,
+        max_tokens: 700,
+      });
+      const synopsis = completion.choices[0].message.content.trim();
+      console.log("[generateSynopsis] 성공, 길이:", synopsis.length);
+      return { synopsis };
+    } catch (error) {
+      console.error("[generateSynopsis] 오류:", error.message);
+      throw new HttpsError("internal", `시놉시스 생성 실패: ${error.message}`);
+    }
+  }
+);
+
+// ────────────────────────────────────────────────────────────
+// 확정된 시놉시스 → 1화 5개 씬으로 분할 (generateContent 대체)
+// ────────────────────────────────────────────────────────────
+exports.generateScenesFromSynopsis = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const openai = new OpenAI();
+    const { synopsis, name, persona } = request.data;
+
+    if (!synopsis || !name) {
+      throw new HttpsError("invalid-argument", "synopsis와 name은 필수입니다.");
+    }
+
+    const systemPrompt = `당신은 숏폼 영상 대본 전문 작가입니다.
+반드시 유효한 JSON만 반환하고, 다른 텍스트는 절대 포함하지 마세요.`;
+
+    const userPrompt = `다음은 크리에이터 '${name}'(페르소나: ${persona ?? ""})의 시리즈 시놉시스입니다.
+
+[시놉시스]
+${synopsis}
+
+위 시놉시스를 바탕으로 1화에 해당하는 1분 숏폼 비디오 대본을 아래 JSON 형식으로 작성하세요.
+
+{
+  "title": "1화 영상 제목 (시청자 클릭을 유도하는 흥미로운 제목)",
+  "scenes": [
+    {
+      "sceneNumber": 1,
+      "direction": "카메라 앵글·배경·분위기 등 구체적인 화면 연출 지시문 (1~2문장)",
+      "dialogue": "크리에이터가 실제로 말하는 자연스러운 대사 (2~4문장, 개성이 드러나도록)"
+    }
+  ]
+}
+
+조건:
+- scenes 정확히 5개
+- '${name}'의 개성이 대사에 분명히 드러날 것
+- 1화 내용 기반으로 구성하고 말미에 2화 예고 뉘앙스 포함`;
+
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.9,
+      });
+      const parsed = JSON.parse(completion.choices[0].message.content);
+      if (!parsed.title || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
+        throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
+      }
+      console.log("[generateScenesFromSynopsis] 성공, 씬 수:", parsed.scenes.length);
+      return { title: parsed.title, scenes: parsed.scenes };
+    } catch (error) {
+      console.error("[generateScenesFromSynopsis] 오류:", error.message);
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", `씬 분할 실패: ${error.message}`);
+    }
+  }
+);
+
+// ────────────────────────────────────────────────────────────
 // 크리에이터 숏폼 콘텐츠(대본) 생성 — JSON 구조화 응답
 // ────────────────────────────────────────────────────────────
 exports.generateContent = onCall(async (request) => {

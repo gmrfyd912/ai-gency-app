@@ -132,10 +132,10 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// 트렌드 기반 2부작 시리즈 시놉시스 생성 (순수 텍스트 반환)
+// 바이럴 검증 스토리 각색 기반 4~10부작 시리즈 시놉시스 생성
 // ────────────────────────────────────────────────────────────
 exports.generateSynopsis = onCall(
-  { timeoutSeconds: 60, memory: "256MiB" },
+  { timeoutSeconds: 90, memory: "256MiB" },
   async (request) => {
     const openai = new OpenAI();
     const { name, persona } = request.data;
@@ -144,31 +144,43 @@ exports.generateSynopsis = onCall(
       throw new HttpsError("invalid-argument", "name과 persona는 필수입니다.");
     }
 
-    const today = new Date().toLocaleDateString("ko-KR", {
-      year: "numeric", month: "long", day: "numeric",
-    });
+    const systemPrompt = `너는 틱톡, 유튜브 쇼츠, 인스타그램 릴스에서 수백만 조회수를 기록한 숏폼 콘텐츠의 플롯을 전문적으로 수집·분석하는 바이럴 스토리 아카이버다.
 
-    const userPrompt = `당신은 숏폼 콘텐츠 시리즈 기획 전문가입니다.
-오늘(${today}) 기준 틱톡·유튜브 쇼츠의 최신 트렌드를 반영하여, 아래 크리에이터의 세계관에 딱 맞는 2편 이상의 시리즈 스토리 줄거리(시놉시스)를 작성하세요.
+【핵심 원칙 — 반드시 준수】
+1. 절대로 처음부터 새로운 스토리를 창작하지 마라. 반드시 이미 대중에게 인기가 검증된 플롯 뼈대를 베이스로 가져와라.
+   - 활용 가능한 검증된 플롯 유형 예시: 직장 내 갑질 후 사이다 반전, 연인의 배신과 각성, 가족 비밀 폭로 막장극, 신데렐라 역전 성공기, 환승연애 삼각관계 폭발, 전 남친/여친 마주침 썰, 회사 내 집단 괴롭힘 복수극, 부모님 몰래 연애 들킴 사건 등
+   - 위 예시에 국한하지 말고, 해당 크리에이터의 분야에서 실제로 바이럴된 스토리 패턴을 적극 활용하라
+2. 가져온 플롯 뼈대를 아래 크리에이터의 성격·직업·나이·세계관에 완벽하게 맞춰 각색(Adaptation)하라. 원본 플롯이 연상되지 않을 정도로 디테일을 바꿔라.
+3. 억지스럽거나 작위적인 전개는 금지다. 시청자가 "이거 완전 실제 있을 법한 얘기다"라고 느껴야 한다.`;
 
-크리에이터 이름: ${name}
-크리에이터 페르소나: ${persona}
+    const userPrompt = `【각색 대상 크리에이터】
+이름: ${name}
+페르소나: ${persona}
 
-요구사항:
-- 전체 시리즈 제목과 각 편(1화, 2화...)의 줄거리를 서술하라
-- 각 편은 숏폼 1분에 적합한 강렬한 훅(hook)으로 시작
-- 2편 이상이 자연스럽게 이어지도록 1화 말미에 클리프행어 포함
-- 전체 분량: 300~500자 내외의 간결한 텍스트
-- JSON 없이 순수 텍스트로만 반환
+【시리즈 기획 요구사항】
+- 편수: 4편 이상 ~ 최대 10편 (스토리 완결에 필요한 만큼 유연하게 결정)
+- 구조: 반드시 기승전결이 완성되는 '완결형 시리즈'로 기획하라. 열린 결말 금지.
+- 각 편의 말미에 다음 화를 보고 싶게 만드는 강력한 클리프행어 배치 (마지막 편 제외)
+- 마지막 편은 반드시 시원한 결말(사이다 엔딩 또는 카타르시스 있는 해소)로 마무리
+- 각 편은 숏폼 1분 분량에 최적화된 단일 사건/감정으로 집중
 
-'${name}'의 개성이 뚜렷이 드러나는 줄거리를 작성하라.`;
+【출력 형식】
+- 순수 텍스트만 반환 (JSON, 마크다운 기호 없음)
+- 첫 줄: 전체 시리즈 제목
+- 이후: 각 편 번호와 해당 화의 핵심 내용을 2~3문장으로 서술
+- 전체 분량: 500~800자 이내
+
+지금 바로 '${name}'의 세계관에 완벽히 녹아드는 각색 시리즈를 기획하라.`;
 
     try {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: [{ role: "user", content: userPrompt }],
-        temperature: 0.9,
-        max_tokens: 700,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.85,
+        max_tokens: 1000,
       });
       const synopsis = completion.choices[0].message.content.trim();
       console.log("[generateSynopsis] 성공, 길이:", synopsis.length);

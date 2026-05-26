@@ -42,23 +42,51 @@ export default function CreatorsScreen({ navigation }) {
             </View>
           }
           renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.card}
-              onPress={() => navigation.navigate('CreatorStudio', { creator: item })}
-              activeOpacity={0.75}
-            >
-              <View style={styles.cardHeader}>
-                {item.category ? (
-                  <Text style={styles.categoryBadge}>{item.category}</Text>
+            <View style={styles.cardWrapper}>
+              {/* 메인 카드 — 탭하면 스튜디오 이동 */}
+              <TouchableOpacity
+                style={styles.card}
+                onPress={() => navigation.navigate('CreatorStudio', { creator: item })}
+                activeOpacity={0.75}
+              >
+                <View style={styles.cardHeader}>
+                  {item.category ? (
+                    <Text style={styles.categoryBadge}>{item.category}</Text>
+                  ) : null}
+                  <Text style={styles.cardArrow}>›</Text>
+                </View>
+                <Text style={styles.cardName}>{item.name}</Text>
+                <Text style={styles.cardPersona} numberOfLines={2}>{item.persona}</Text>
+                {item.voice ? (
+                  <Text style={styles.cardVoice}>🎙 {item.voice}</Text>
                 ) : null}
-                <Text style={styles.cardArrow}>›</Text>
+              </TouchableOpacity>
+
+              {/* 액션 버튼 행 */}
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => navigation.navigate('Synopsis', { creator: item })}
+                  activeOpacity={0.75}
+                >
+                  <Text style={styles.actionBtnText}>✨ 새 스토리</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnPurple]}
+                  onPress={() => navigation.navigate('StoryList', { creator: item })}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.actionBtnText, styles.actionBtnTextPurple]}>📜 스토리 보관함</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnDark]}
+                  onPress={() => navigation.navigate('Gallery', { creator: item })}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.actionBtnText, styles.actionBtnTextDark]}>🎞 비디오</Text>
+                </TouchableOpacity>
               </View>
-              <Text style={styles.cardName}>{item.name}</Text>
-              <Text style={styles.cardPersona} numberOfLines={2}>{item.persona}</Text>
-              {item.voice ? (
-                <Text style={styles.cardVoice}>🎙 {item.voice}</Text>
-              ) : null}
-            </TouchableOpacity>
+            </View>
           )}
         />
       )}
@@ -92,6 +120,7 @@ const styles = StyleSheet.create({
   empty: { fontSize: 15, color: '#9CA3AF', marginBottom: 6 },
   emptyHint: { fontSize: 13, color: '#C4C4C4' },
 
+  cardWrapper: { gap: 2 },
   card: {
     backgroundColor: '#fff',
     borderRadius: 14,
@@ -101,6 +130,16 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
+  actionRow: { flexDirection: 'row', gap: 4 },
+  actionBtn: {
+    flex: 1, paddingVertical: 9, borderRadius: 10,
+    backgroundColor: '#EBF4FF', alignItems: 'center', justifyContent: 'center',
+  },
+  actionBtnPurple: { backgroundColor: '#F3F0FF' },
+  actionBtnDark: { backgroundColor: '#F0F4FF' },
+  actionBtnText: { fontSize: 11, fontWeight: '700', color: '#4A90E2' },
+  actionBtnTextPurple: { color: '#7C3AED' },
+  actionBtnTextDark: { color: '#374151' },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   cardArrow: { marginLeft: 'auto', fontSize: 20, color: '#C4C4C4', lineHeight: 22 },
   categoryBadge: {

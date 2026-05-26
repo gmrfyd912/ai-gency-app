@@ -170,14 +170,14 @@ async function searchTrendingStories(query) {
 }
 
 // ────────────────────────────────────────────────────────────
-// 자율 검색 AI 에이전트: Function Calling → 웹 검색 → 각색
-// JSON { synopsis, originalTitle, originalReference, originalReferenceUrl } 반환
+// 자율 검색 AI 에이전트: Function Calling → 웹 검색 → 원본 전문 추출 → 각색
+// 완료 후 Firestore series 자동 저장, seriesId 반환
 // ────────────────────────────────────────────────────────────
 exports.generateSynopsis = onCall(
-  { timeoutSeconds: 90, memory: "256MiB" },
+  { timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     const openai = new OpenAI();
-    const { name, persona } = request.data;
+    const { name, persona, creatorId } = request.data;
 
     if (!name || !persona) {
       throw new HttpsError("invalid-argument", "name과 persona는 필수입니다.");
@@ -273,32 +273,39 @@ exports.generateSynopsis = onCall(
       // ── Step 3: 검색 결과 기반 시놉시스 JSON 최종 생성 ─────────
       messages.push({
         role: "user",
-        content: `위에서 검색된 원본 본문(raw_content)을 철저히 분석하여 아래 JSON 형식으로 ${name}의 시리즈를 기획하라.
+        content: `위에서 검색된 원본 본문들 중 가장 스토리가 완전하고 흥미로운 원문을 선택하여 아래 JSON 형식으로 응답하라.
 
-【JSON 반환 전 자체 검증 체크리스트 — 3가지 모두 통과해야 함】
-1. synopsis에 원본의 핵심 갈등 포인트가 3개 이상 구체적으로 살아있는가?
-2. 원본의 결말(사이다·막장·반전)이 마지막 화에 희석 없이 그대로 반영되어 있는가?
-3. 원본에서 가장 자극적이거나 웃긴 장면이 "건전하게 순화"되지 않고 보존되어 있는가?
+【1단계 — 원본 전문 추출 (절대 요약·축약 금지)】
+가장 재미있는 원본을 골라 핵심 이야기 본문 전체를 originalFullText에 그대로 옮겨라.
+광고·사이트 메뉴·관련 링크 등 스토리와 무관한 텍스트는 제거하되, 실제 이야기 본문은 한 자도 줄이지 마라. (최소 400자 이상)
 
-위 3가지 체크를 완료한 후 아래 JSON을 반환하라:
+【2단계 — N부작 시리즈 구조화 (원본 톤·결말 완전 보존)】
+originalFullText의 플롯·갈등·결말을 그대로 유지하면서 ${name}의 페르소나에 맞는 인물·배경으로만 바꿔 4~10화 시리즈로 구조화하라.
+
+【자체 검증 필수 — 3가지 모두 충족해야 반환 가능】
+□ originalFullText가 원본 이야기 본문을 400자 이상 담고 있는가?
+□ episodes 각 항목에 원본의 구체적 사건·갈등이 살아있는가?
+□ 마지막 에피소드에 원본 사이다/막장/반전 결말이 명확히 반영되어 있는가?
 
 {
-  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화) 줄거리. 600~900자. 각 화의 구체적 사건이 드러나야 함.",
-  "originalTitle": "원본 스토리의 실제 제목 또는 핵심 키워드",
+  "originalFullText": "원본 이야기 핵심 본문 전체 — 400자 이상, 절대 요약·축약 금지",
+  "seriesTitle": "각색 시리즈 전체 제목 (25자 이내)",
+  "fullSynopsis": "전체 시리즈 흐름 요약 (200~350자, 원본 톤 완전 유지)",
+  "episodes": [
+    { "number": 1, "title": "1화 제목", "summary": "1화 줄거리 (100~150자, 구체적 사건 명시)" },
+    { "number": 2, "title": "2화 제목", "summary": "2화 줄거리 (100~150자)" }
+  ],
+  "originalTitle": "원본 스토리 제목 또는 핵심 키워드",
   "originalReference": "출처 플랫폼 + 핵심 키워드 (예: '유튜브 쇼츠 - 직장 갑질 사이다 썰')",
   "originalReferenceUrl": "검색에서 발견한 실제 URL (없으면 null)",
-  "preservedPlotPoints": [
-    "원본에서 그대로 보존한 핵심 갈등/사건 포인트를 최소 3개 이상 명시",
-    "예: '상사가 야근 강요 후 성과는 가로챔'",
-    "예: '퇴직 당일 전사 이메일로 사이다 폭로'"
-  ]
+  "preservedPlotPoints": ["원본에서 보존한 핵심 갈등/사건 포인트 3개 이상"]
 }
 
 시리즈 요구사항:
 - 편수 4~10편, 기승전결 완결형 (열린 결말 금지)
 - 각 화 말미: 강력한 클리프행어 (마지막 화 제외)
-- 마지막 화: 원본 결말 기반 사이다/카타르시스 엔딩
-- 크리에이터 '${name}'의 페르소나에 맞는 인물·배경으로만 각색 (플롯은 원본 그대로)`,
+- 마지막 화: 원본 결말 기반 사이다/카타르시스 엔딩 필수
+- 인물·배경은 ${name}의 페르소나로 각색, 플롯·갈등·결말은 원본 그대로`,
       });
 
       const step3 = await openai.chat.completions.create({
@@ -306,29 +313,62 @@ exports.generateSynopsis = onCall(
         response_format: { type: "json_object" },
         messages,
         temperature: 0.85,
-        max_tokens: 1500,
+        max_tokens: 3000,
       });
 
       const parsed = JSON.parse(step3.choices[0].message.content);
-      if (!parsed.synopsis) {
-        throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
+
+      // ── 필수 필드 검증 ────────────────────────────────────────
+      if (!parsed.originalFullText || !parsed.seriesTitle || !parsed.fullSynopsis) {
+        throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다 (필수 필드 누락).");
+      }
+      if (!Array.isArray(parsed.episodes) || parsed.episodes.length < 2) {
+        throw new HttpsError("internal", "에피소드 구성이 올바르지 않습니다 (최소 2화 필요).");
+      }
+      if ((parsed.originalFullText ?? "").length < 200) {
+        throw new HttpsError("internal", "원본 전문 추출 실패: 본문이 너무 짧습니다. 다시 시도해주세요.");
       }
 
-      // ── 원본 플롯 보존 검증 ────────────────────────────────────
       const preservedPoints = Array.isArray(parsed.preservedPlotPoints)
         ? parsed.preservedPlotPoints.filter((p) => typeof p === "string" && p.trim().length > 0)
         : [];
-      console.log("[generateSynopsis] 보존 포인트 수:", preservedPoints.length, "/", preservedPoints);
       if (preservedPoints.length < 2) {
-        throw new HttpsError(
-          "internal",
-          "원본 플롯 보존 검증 실패: 원본 내용이 시놉시스에 충분히 반영되지 않았습니다. 다시 시도해주세요."
-        );
+        throw new HttpsError("internal", "원본 플롯 보존 검증 실패: 핵심 갈등 포인트가 부족합니다. 다시 시도해주세요.");
       }
 
-      console.log("[generateSynopsis] 완료, synopsis 길이:", parsed.synopsis.length);
+      console.log("[generateSynopsis] 검증 완료 — 에피소드:", parsed.episodes.length, "개 | 원본전문:", parsed.originalFullText.length, "자");
+
+      // ── Firestore series 자동 저장 ────────────────────────────
+      let savedSeriesId = null;
+      if (creatorId) {
+        try {
+          const seriesRef = await adminDb
+            .collection("creators").doc(creatorId)
+            .collection("series").add({
+              title: parsed.seriesTitle,
+              fullSynopsis: parsed.fullSynopsis,
+              originalFullText: parsed.originalFullText,
+              episodes: parsed.episodes,
+              originalTitle: parsed.originalTitle ?? "",
+              originalReference: parsed.originalReference ?? "",
+              originalReferenceUrl: parsed.originalReferenceUrl ?? null,
+              preservedPlotPoints: preservedPoints,
+              status: "draft",
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          savedSeriesId = seriesRef.id;
+          console.log("[generateSynopsis] Firestore 저장 완료:", savedSeriesId);
+        } catch (saveErr) {
+          console.warn("[generateSynopsis] Firestore 저장 실패 (비치명적):", saveErr.message);
+        }
+      }
+
       return {
-        synopsis: parsed.synopsis,
+        seriesId: savedSeriesId,
+        originalFullText: parsed.originalFullText,
+        seriesTitle: parsed.seriesTitle,
+        fullSynopsis: parsed.fullSynopsis,
+        episodes: parsed.episodes,
         originalTitle: parsed.originalTitle ?? "",
         originalReference: parsed.originalReference ?? "",
         originalReferenceUrl: parsed.originalReferenceUrl ?? null,

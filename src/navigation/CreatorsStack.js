@@ -4,6 +4,7 @@ import CreateCreatorScreen from '../screens/CreateCreatorScreen';
 import StudioScreen from '../screens/StudioScreen';
 import SynopsisScreen from '../screens/SynopsisScreen';
 import GalleryScreen from '../screens/GalleryScreen';
+import StoryListScreen from '../screens/StoryListScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -47,6 +48,14 @@ export default function CreatorsStack() {
         component={GalleryScreen}
         options={({ route }) => ({
           title: `${route.params?.creator?.name ?? ''} 비디오 보관함`,
+          ...headerCommon,
+        })}
+      />
+      <Stack.Screen
+        name="StoryList"
+        component={StoryListScreen}
+        options={({ route }) => ({
+          title: `${route.params?.creator?.name ?? ''} 스토리 보관함`,
           ...headerCommon,
         })}
       />

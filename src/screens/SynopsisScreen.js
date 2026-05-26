@@ -15,23 +15,24 @@ import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
-// ── Cloud Function 클라이언트 ─────────────────────────────────
-const generateSynopsisFn = httpsCallable(functions, 'generateSynopsis', { timeout: 60000 });
+const generateSynopsisFn = httpsCallable(functions, 'generateSynopsis', { timeout: 90000 });
 const generateScenesFromSynopsisFn = httpsCallable(functions, 'generateScenesFromSynopsis', { timeout: 60000 });
 
-const episodesCol = (creatorId) => collection(db, 'creators', creatorId, 'episodes');
+const seriesCol = (creatorId) => collection(db, 'creators', creatorId, 'series');
+const episodesCol = (creatorId, seriesId) =>
+  collection(db, 'creators', creatorId, 'series', seriesId, 'episodes');
 
 export default function SynopsisScreen({ route, navigation }) {
   const { creator } = route.params;
 
-  const [synopsis, setSynopsis]               = useState('');
-  const [loadingSynopsis, setLoadingSynopsis] = useState(false);
-  const [generatingScenes, setGeneratingScenes] = useState(false);
+  const [synopsis, setSynopsis]                   = useState('');
+  const [originalReference, setOriginalReference] = useState('');
+  const [loadingSynopsis, setLoadingSynopsis]     = useState(false);
+  const [generatingScenes, setGeneratingScenes]   = useState(false);
   const inputRef = useRef(null);
 
   const isLocked = loadingSynopsis || generatingScenes;
 
-  // 마운트 시 자동 시놉시스 생성
   useEffect(() => {
     callGenerateSynopsis();
   }, []);
@@ -40,9 +41,11 @@ export default function SynopsisScreen({ route, navigation }) {
   const callGenerateSynopsis = async () => {
     setLoadingSynopsis(true);
     setSynopsis('');
+    setOriginalReference('');
     try {
       const result = await generateSynopsisFn({ name: creator.name, persona: creator.persona });
       setSynopsis(result.data.synopsis);
+      setOriginalReference(result.data.originalReference ?? '');
     } catch (e) {
       Alert.alert('시놉시스 생성 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
     } finally {
@@ -50,7 +53,7 @@ export default function SynopsisScreen({ route, navigation }) {
     }
   };
 
-  // ── 씬 분할 → Firestore 저장 → StudioScreen 이동 ──────────
+  // ── 씬 분할 → series + episodes 저장 → StudioScreen 이동 ──
   const handleSplitScenes = async () => {
     if (!synopsis.trim() || isLocked) return;
     setGeneratingScenes(true);
@@ -62,7 +65,17 @@ export default function SynopsisScreen({ route, navigation }) {
       });
       const newScript = { title: result.data.title, scenes: result.data.scenes };
 
-      const episodeRef = await addDoc(episodesCol(creator.id), {
+      // series 문서 생성
+      const seriesRef = await addDoc(seriesCol(creator.id), {
+        title: newScript.title,
+        fullSynopsis: synopsis,
+        originalReference,
+        createdAt: serverTimestamp(),
+      });
+
+      // 1화 에피소드 생성
+      const episodeRef = await addDoc(episodesCol(creator.id, seriesRef.id), {
+        episodeNumber: 1,
         title: newScript.title,
         synopsis,
         scenes: newScript.scenes.map((s) => ({ ...s, imageUri: null, audioUri: null })),
@@ -73,6 +86,7 @@ export default function SynopsisScreen({ route, navigation }) {
         creator,
         incomingEpisode: {
           id: episodeRef.id,
+          seriesId: seriesRef.id,
           title: newScript.title,
           scenes: newScript.scenes,
         },
@@ -95,7 +109,7 @@ export default function SynopsisScreen({ route, navigation }) {
         contentContainerStyle={styles.inner}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── 크리에이터 프로필 헤더 ── */}
+        {/* ── 크리에이터 헤더 ── */}
         <View style={styles.profileRow}>
           <View style={styles.avatarCircle}>
             <Text style={styles.avatarText}>{creator.name.charAt(0)}</Text>
@@ -105,6 +119,17 @@ export default function SynopsisScreen({ route, navigation }) {
             <Text style={styles.profileSub}>시리즈 기획 중</Text>
           </View>
         </View>
+
+        {/* ── 원본 출처 배지 ── */}
+        {originalReference ? (
+          <View style={styles.refBadge}>
+            <Text style={styles.refIcon}>🔍</Text>
+            <View style={styles.refTextBox}>
+              <Text style={styles.refLabel}>참고 원본 플롯</Text>
+              <Text style={styles.refValue}>{originalReference}</Text>
+            </View>
+          </View>
+        ) : null}
 
         {/* ── 시놉시스 카드 ── */}
         <View style={styles.synopsisCard}>
@@ -116,9 +141,9 @@ export default function SynopsisScreen({ route, navigation }) {
           {loadingSynopsis ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator size="large" color="#4A90E2" />
-              <Text style={styles.loadingTitle}>트렌드 반영 중...</Text>
+              <Text style={styles.loadingTitle}>바이럴 플롯 분석 중...</Text>
               <Text style={styles.loadingSubtitle}>
-                {creator.name}의 세계관으로 시리즈를 기획하고 있습니다
+                {creator.name}의 세계관에 맞는 검증된 스토리를 각색하고 있습니다
               </Text>
             </View>
           ) : (
@@ -143,7 +168,7 @@ export default function SynopsisScreen({ route, navigation }) {
         ) : null}
       </ScrollView>
 
-      {/* ── 하단 액션 버튼 3개 ── */}
+      {/* ── 하단 액션 버튼 ── */}
       <View style={styles.footer}>
         <View style={styles.secondaryRow}>
           {/* ① 스토리 다시 짜기 */}
@@ -202,109 +227,65 @@ export default function SynopsisScreen({ route, navigation }) {
   );
 }
 
-// ─── 스타일 ───────────────────────────────────────────────────
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F5F7FA' },
   scroll: { flex: 1 },
   inner: { padding: 16, paddingBottom: 24 },
 
   profileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#fff', borderRadius: 16, padding: 14, marginBottom: 12,
+    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
   },
-  avatarCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#4A90E2',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  avatarCircle: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#4A90E2', alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontSize: 18, fontWeight: '800', color: '#fff' },
   profileInfo: { flex: 1 },
   profileName: { fontSize: 17, fontWeight: '800', color: '#1A1A2E' },
   profileSub: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
 
+  refBadge: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    backgroundColor: '#FFFBEB', borderRadius: 12, padding: 12, marginBottom: 12,
+    borderWidth: 1, borderColor: '#FDE68A',
+  },
+  refIcon: { fontSize: 16, marginTop: 1 },
+  refTextBox: { flex: 1 },
+  refLabel: { fontSize: 10, fontWeight: '700', color: '#D97706', letterSpacing: 0.5, marginBottom: 3 },
+  refValue: { fontSize: 13, color: '#78350F', lineHeight: 18 },
+
   synopsisCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-    minHeight: 280,
+    backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12,
+    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3, minHeight: 260,
   },
   cardLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
   cardLabelIcon: { fontSize: 15 },
   cardLabel: { fontSize: 13, fontWeight: '700', color: '#4A90E2', letterSpacing: 0.3 },
 
-  loadingBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-    gap: 12,
-  },
+  loadingBox: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 56, gap: 12 },
   loadingTitle: { fontSize: 16, fontWeight: '700', color: '#1A1A2E' },
   loadingSubtitle: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', lineHeight: 20 },
 
-  synopsisInput: {
-    fontSize: 14,
-    color: '#1A1A2E',
-    lineHeight: 24,
-    minHeight: 200,
-    textAlignVertical: 'top',
-  },
+  synopsisInput: { fontSize: 14, color: '#1A1A2E', lineHeight: 24, minHeight: 200, textAlignVertical: 'top' },
 
   editHint: { fontSize: 12, color: '#9CA3AF', paddingHorizontal: 4, marginBottom: 8 },
 
   footer: {
-    paddingHorizontal: 16,
-    paddingBottom: 32,
-    paddingTop: 12,
-    backgroundColor: '#F5F7FA',
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    gap: 10,
+    paddingHorizontal: 16, paddingBottom: 32, paddingTop: 12,
+    backgroundColor: '#F5F7FA', borderTopWidth: 1, borderTopColor: '#E5E7EB', gap: 10,
   },
   secondaryRow: { flexDirection: 'row', gap: 10 },
   secondaryBtn: {
-    flex: 1,
-    paddingVertical: 13,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#4A90E2',
-    alignItems: 'center',
-    backgroundColor: '#F0F7FF',
+    flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1.5,
+    borderColor: '#4A90E2', alignItems: 'center', backgroundColor: '#F0F7FF',
   },
   secondaryBtnText: { fontSize: 13, fontWeight: '700', color: '#4A90E2' },
   btnDisabled: { borderColor: '#E5E7EB', backgroundColor: '#F9F9F9' },
   disabledText: { color: '#C4C4C4' },
 
   primaryBtn: {
-    backgroundColor: '#1A1A2E',
-    borderRadius: 16,
-    paddingVertical: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    shadowColor: '#1A1A2E',
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+    backgroundColor: '#1A1A2E', borderRadius: 16, paddingVertical: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    shadowColor: '#1A1A2E', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8,
   },
   primaryBtnDisabled: { opacity: 0.4, shadowOpacity: 0.05, elevation: 2 },
   primaryBtnIcon: { fontSize: 20 },

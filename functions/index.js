@@ -132,7 +132,8 @@ exports.fetchTodayTrends = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// 바이럴 검증 스토리 각색 기반 4~10부작 시리즈 시놉시스 생성
+// 바이럴 검증 플롯 각색 기반 4~10부작 완결형 시리즈 시놉시스 생성
+// JSON { synopsis, originalReference } 반환
 // ────────────────────────────────────────────────────────────
 exports.generateSynopsis = onCall(
   { timeoutSeconds: 90, memory: "256MiB" },
@@ -145,48 +146,52 @@ exports.generateSynopsis = onCall(
     }
 
     const systemPrompt = `너는 틱톡, 유튜브 쇼츠, 인스타그램 릴스에서 수백만 조회수를 기록한 숏폼 콘텐츠의 플롯을 전문적으로 수집·분석하는 바이럴 스토리 아카이버다.
+반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.
 
-【핵심 원칙 — 반드시 준수】
-1. 절대로 처음부터 새로운 스토리를 창작하지 마라. 반드시 이미 대중에게 인기가 검증된 플롯 뼈대를 베이스로 가져와라.
-   - 활용 가능한 검증된 플롯 유형 예시: 직장 내 갑질 후 사이다 반전, 연인의 배신과 각성, 가족 비밀 폭로 막장극, 신데렐라 역전 성공기, 환승연애 삼각관계 폭발, 전 남친/여친 마주침 썰, 회사 내 집단 괴롭힘 복수극, 부모님 몰래 연애 들킴 사건 등
-   - 위 예시에 국한하지 말고, 해당 크리에이터의 분야에서 실제로 바이럴된 스토리 패턴을 적극 활용하라
-2. 가져온 플롯 뼈대를 아래 크리에이터의 성격·직업·나이·세계관에 완벽하게 맞춰 각색(Adaptation)하라. 원본 플롯이 연상되지 않을 정도로 디테일을 바꿔라.
-3. 억지스럽거나 작위적인 전개는 금지다. 시청자가 "이거 완전 실제 있을 법한 얘기다"라고 느껴야 한다.`;
+【핵심 원칙 — 절대 준수】
+1. 절대로 처음부터 새 스토리를 창작하지 마라. 이미 대중에게 인기가 검증된 플롯 뼈대를 반드시 베이스로 가져와라.
+   검증된 플롯 유형 예시: 직장 갑질 사이다 반전, 연인 배신과 각성, 가족 비밀 폭로 막장극, 신데렐라 역전, 환승연애 삼각관계 폭발, 전 연인 마주침 썰, 집단 괴롭힘 복수극, 부모님 몰래 연애 들킴 사건 등
+   — 위 예시에 국한하지 말고 해당 크리에이터 분야에서 실제 바이럴된 패턴을 적극 활용하라.
+2. 가져온 뼈대를 크리에이터의 성별·나이·직업·성향에 완벽히 맞춰 각색하라. 원본이 연상되지 않을 정도로 디테일을 바꿔라.
+3. 억지스럽고 작위적인 전개 금지. "실제 있을 법한 얘기"여야 한다.`;
 
-    const userPrompt = `【각색 대상 크리에이터】
+    const userPrompt = `각색 대상 크리에이터:
 이름: ${name}
 페르소나: ${persona}
 
-【시리즈 기획 요구사항】
-- 편수: 4편 이상 ~ 최대 10편 (스토리 완결에 필요한 만큼 유연하게 결정)
-- 구조: 반드시 기승전결이 완성되는 '완결형 시리즈'로 기획하라. 열린 결말 금지.
-- 각 편의 말미에 다음 화를 보고 싶게 만드는 강력한 클리프행어 배치 (마지막 편 제외)
-- 마지막 편은 반드시 시원한 결말(사이다 엔딩 또는 카타르시스 있는 해소)로 마무리
-- 각 편은 숏폼 1분 분량에 최적화된 단일 사건/감정으로 집중
+위 크리에이터를 주인공으로 한 4~10부작 완결형 숏폼 시리즈를 다음 JSON 형식으로 기획하라:
 
-【출력 형식】
-- 순수 텍스트만 반환 (JSON, 마크다운 기호 없음)
-- 첫 줄: 전체 시리즈 제목
-- 이후: 각 편 번호와 해당 화의 핵심 내용을 2~3문장으로 서술
-- 전체 분량: 500~800자 이내
+{
+  "synopsis": "전체 시리즈 제목(첫 줄)과 각 편(1화~N화)의 줄거리를 서술한 텍스트. 500~800자 이내.",
+  "originalReference": "참고한 인기 플롯의 출처 (예: '유튜브 쇼츠 - 직장 갑질 사이다 썰', '틱톡 - 환승연애 폭로 시리즈'). 실제 존재하지 않는 URL은 절대 금지 — 플랫폼명과 키워드만 명시."
+}
 
-지금 바로 '${name}'의 세계관에 완벽히 녹아드는 각색 시리즈를 기획하라.`;
+시리즈 요구사항:
+- 편수 4~10편, 기승전결 완결형 (열린 결말 금지)
+- 각 화 말미에 강력한 클리프행어 (마지막 화 제외)
+- 마지막 화: 사이다/카타르시스 엔딩 필수
+- 각 편: 숏폼 1분에 최적화된 단일 사건/감정 집중`;
 
     try {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: 0.85,
-        max_tokens: 1000,
+        max_tokens: 1200,
       });
-      const synopsis = completion.choices[0].message.content.trim();
-      console.log("[generateSynopsis] 성공, 길이:", synopsis.length);
-      return { synopsis };
+      const parsed = JSON.parse(completion.choices[0].message.content);
+      if (!parsed.synopsis || !parsed.originalReference) {
+        throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
+      }
+      console.log("[generateSynopsis] 성공, synopsis 길이:", parsed.synopsis.length);
+      return { synopsis: parsed.synopsis, originalReference: parsed.originalReference };
     } catch (error) {
       console.error("[generateSynopsis] 오류:", error.message);
+      if (error instanceof HttpsError) throw error;
       throw new HttpsError("internal", `시놉시스 생성 실패: ${error.message}`);
     }
   }
@@ -227,7 +232,8 @@ ${synopsis}
 }
 
 조건:
-- scenes 정확히 5개
+- scenes 최소 5개 ~ 최대 15개 (1화 내용의 밀도와 호흡에 맞춰 자율 결정)
+- 각 씬은 30~60초 분량의 단일 사건/감정에 집중
 - '${name}'의 개성이 대사에 분명히 드러날 것
 - 1화 내용 기반으로 구성하고 말미에 2화 예고 뉘앙스 포함`;
 
@@ -319,10 +325,10 @@ exports.generateContent = onCall(async (request) => {
 exports.generateSceneImage = onCall(
   { timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
-    const { visualPrompt, creatorId, episodeId, sceneIndex } = request.data;
+    const { visualPrompt, creatorId, seriesId, episodeId, sceneIndex } = request.data;
 
-    if (!visualPrompt || !creatorId || !episodeId || sceneIndex == null) {
-      throw new HttpsError("invalid-argument", "visualPrompt, creatorId, episodeId, sceneIndex는 필수입니다.");
+    if (!visualPrompt || !creatorId || !seriesId || !episodeId || sceneIndex == null) {
+      throw new HttpsError("invalid-argument", "visualPrompt, creatorId, seriesId, episodeId, sceneIndex는 필수입니다.");
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -369,7 +375,7 @@ exports.generateSceneImage = onCall(
 
     // Base64 → Buffer → Firebase Storage 업로드
     const imgBuffer = Buffer.from(b64, "base64");
-    const storagePath = `creators/${creatorId}/episodes/${episodeId}/scene_${sceneIndex}.jpg`;
+    const storagePath = `creators/${creatorId}/series/${seriesId}/episodes/${episodeId}/scene_${sceneIndex}.jpg`;
     const bucket = admin.storage().bucket();
     const file = bucket.file(storagePath);
     await file.save(imgBuffer, { contentType: "image/jpeg" });
@@ -389,15 +395,16 @@ exports.generateSceneImage = onCall(
 exports.generateFinalVideo = onCall(
   { timeoutSeconds: 540, memory: "2GiB" },
   async (request) => {
-    const { creatorId, episodeId } = request.data;
+    const { creatorId, seriesId, episodeId } = request.data;
 
-    if (!creatorId || !episodeId) {
-      throw new HttpsError("invalid-argument", "creatorId와 episodeId는 필수입니다.");
+    if (!creatorId || !seriesId || !episodeId) {
+      throw new HttpsError("invalid-argument", "creatorId, seriesId, episodeId는 필수입니다.");
     }
 
     // ── Firestore 에피소드 조회 ──────────────────────────────
     const episodeRef = adminDb
       .collection("creators").doc(creatorId)
+      .collection("series").doc(seriesId)
       .collection("episodes").doc(episodeId);
     const episodeSnap = await episodeRef.get();
 
@@ -494,7 +501,7 @@ exports.generateFinalVideo = onCall(
       console.log("[generateFinalVideo] 최종 병합 완료");
 
       // ── Firebase Storage 업로드 ───────────────────────────
-      const storagePath = `creators/${creatorId}/episodes/${episodeId}/final.mp4`;
+      const storagePath = `creators/${creatorId}/series/${seriesId}/episodes/${episodeId}/final.mp4`;
       const bucket = admin.storage().bucket();
 
       await bucket.upload(finalPath, {
@@ -529,10 +536,10 @@ exports.generateSceneAudio = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     const openai = new OpenAI();
-    const { dialogue, voice, creatorId, episodeId, sceneIndex } = request.data;
+    const { dialogue, voice, creatorId, seriesId, episodeId, sceneIndex } = request.data;
 
-    if (!dialogue || !creatorId || !episodeId || sceneIndex == null) {
-      throw new HttpsError("invalid-argument", "dialogue, creatorId, episodeId, sceneIndex는 필수입니다.");
+    if (!dialogue || !creatorId || !seriesId || !episodeId || sceneIndex == null) {
+      throw new HttpsError("invalid-argument", "dialogue, creatorId, seriesId, episodeId, sceneIndex는 필수입니다.");
     }
 
     const VALID_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
@@ -549,7 +556,7 @@ exports.generateSceneAudio = onCall(
       const buffer = Buffer.from(await mp3.arrayBuffer());
 
       // Buffer → Firebase Storage 업로드
-      const storagePath = `creators/${creatorId}/episodes/${episodeId}/scene_${sceneIndex}.mp3`;
+      const storagePath = `creators/${creatorId}/series/${seriesId}/episodes/${episodeId}/scene_${sceneIndex}.mp3`;
       const bucket = admin.storage().bucket();
       const file = bucket.file(storagePath);
       await file.save(buffer, { contentType: "audio/mpeg" });

@@ -20,6 +20,7 @@ import {
   query,
   updateDoc,
 } from 'firebase/firestore';
+// seriesCol / episodesCol / episodeDoc helpers defined below use collection/doc above
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
@@ -33,10 +34,12 @@ const pad = (n) => String(n).padStart(2, '0');
 const SCENE_COLORS = ['#4A90E2', '#7C3AED', '#059669', '#D97706', '#DC2626'];
 
 // ── Firestore 경로 헬퍼 ───────────────────────────────────────
-const episodesCol = (creatorId) =>
-  collection(db, 'creators', creatorId, 'episodes');
-const episodeDoc = (creatorId, episodeId) =>
-  doc(db, 'creators', creatorId, 'episodes', episodeId);
+const seriesCol = (creatorId) =>
+  collection(db, 'creators', creatorId, 'series');
+const episodesCol = (creatorId, seriesId) =>
+  collection(db, 'creators', creatorId, 'series', seriesId, 'episodes');
+const episodeDoc = (creatorId, seriesId, episodeId) =>
+  doc(db, 'creators', creatorId, 'series', seriesId, 'episodes', episodeId);
 
 // ── scenes 배열을 Firestore 저장 형태로 직렬화 ──────────────
 // script.scenes (순수 대본 데이터) + 현재 imageUri/audioUri 상태를 합산
@@ -63,12 +66,17 @@ export default function StudioScreen({ route, navigation }) {
   const soundRef = useRef(null); // 현재 재생 중인 Sound 인스턴스
 
   // ── Firestore 자동 저장 상태 ─────────────────────────────
+  const [currentSeriesId, setCurrentSeriesId]   = useState(null);
   const [currentEpisodeId, setCurrentEpisodeId] = useState(null);
   const [initialLoading, setInitialLoading]     = useState(true);
 
   // ── 영상 합성 상태 ────────────────────────────────────────
   const [synthesizing, setSynthesizing] = useState(false);
   const [videoUrl, setVideoUrl]         = useState(null);
+
+  // ── 원클릭 통짜 빌드 진행 상태 ────────────────────────────
+  // phase: null | 'image' | 'audio' | 'video'
+  const [bulkProgress, setBulkProgress] = useState({ phase: null, current: 0, total: 0 });
 
   // ── SynopsisScreen에서 씬 분할 완료 후 전달된 신규 에피소드 수신 ──
   useEffect(() => {
@@ -81,8 +89,10 @@ export default function StudioScreen({ route, navigation }) {
     setPlayingIdx(null);
     setVideoUrl(null);
     setSynthesizing(false);
+    setBulkProgress({ phase: null, current: 0, total: 0 });
     setSceneLoadingIdx(null);
     setAudioDubbingIdx(null);
+    setCurrentSeriesId(ep.seriesId);
     setCurrentEpisodeId(ep.id);
     setScript({ title: ep.title, scenes: ep.scenes });
     setSceneImages({});
@@ -107,30 +117,42 @@ export default function StudioScreen({ route, navigation }) {
     };
   }, []);
 
-  // ── Firestore 최신 에피소드 로드 ─────────────────────────
+  // ── Firestore 최신 시리즈 → 최신 에피소드 로드 ────────────
   const loadLatestEpisode = async () => {
     setInitialLoading(true);
     try {
-      const q = query(episodesCol(creator.id), orderBy('createdAt', 'desc'), limit(1));
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        const snap = snapshot.docs[0];
-        const data = snap.data();
-        setCurrentEpisodeId(snap.id);
-        const savedImages = {};
-        const savedAudios = {};
-        (data.scenes ?? []).forEach((scene, idx) => {
-          if (scene.imageUri) savedImages[idx] = scene.imageUri;
-          if (scene.audioUri) savedAudios[idx] = scene.audioUri;
-        });
-        setScript({
-          title: data.title,
-          scenes: data.scenes.map(({ imageUri: _i, audioUri: _a, ...rest }) => rest),
-        });
-        setSceneImages(savedImages);
-        setSceneAudios(savedAudios);
-        if (data.videoUrl) setVideoUrl(data.videoUrl);
-      }
+      // 1단계: 최신 series 조회
+      const seriesSnap = await getDocs(
+        query(seriesCol(creator.id), orderBy('createdAt', 'desc'), limit(1))
+      );
+      if (seriesSnap.empty) return;
+
+      const latestSeries = seriesSnap.docs[0];
+      const sid = latestSeries.id;
+      setCurrentSeriesId(sid);
+
+      // 2단계: 해당 series의 최신 에피소드 조회
+      const epSnap = await getDocs(
+        query(episodesCol(creator.id, sid), orderBy('createdAt', 'desc'), limit(1))
+      );
+      if (epSnap.empty) return;
+
+      const snap = epSnap.docs[0];
+      const data = snap.data();
+      setCurrentEpisodeId(snap.id);
+      const savedImages = {};
+      const savedAudios = {};
+      (data.scenes ?? []).forEach((scene, idx) => {
+        if (scene.imageUri) savedImages[idx] = scene.imageUri;
+        if (scene.audioUri) savedAudios[idx] = scene.audioUri;
+      });
+      setScript({
+        title: data.title,
+        scenes: data.scenes.map(({ imageUri: _i, audioUri: _a, ...rest }) => rest),
+      });
+      setSceneImages(savedImages);
+      setSceneAudios(savedAudios);
+      if (data.videoUrl) setVideoUrl(data.videoUrl);
     } catch (e) {
       console.error('에피소드 로드 실패:', e.message);
     } finally {
@@ -140,9 +162,9 @@ export default function StudioScreen({ route, navigation }) {
 
   // ── Firestore 씬 배열 일괄 저장 ──────────────────────────
   const persistScenes = async (overrides = {}) => {
-    if (!currentEpisodeId || !script) return;
+    if (!currentSeriesId || !currentEpisodeId || !script) return;
     try {
-      await updateDoc(episodeDoc(creator.id, currentEpisodeId), {
+      await updateDoc(episodeDoc(creator.id, currentSeriesId, currentEpisodeId), {
         scenes: buildScenesPayload(script.scenes, sceneImages, sceneAudios, overrides),
       });
     } catch (e) {
@@ -157,6 +179,7 @@ export default function StudioScreen({ route, navigation }) {
       const result = await generateSceneImageFn({
         visualPrompt: direction,
         creatorId: creator.id,
+        seriesId: currentSeriesId,
         episodeId: currentEpisodeId,
         sceneIndex: idx,
       });
@@ -178,6 +201,7 @@ export default function StudioScreen({ route, navigation }) {
         dialogue,
         voice: 'nova',
         creatorId: creator.id,
+        seriesId: currentSeriesId,
         episodeId: currentEpisodeId,
         sceneIndex: idx,
       });
@@ -226,9 +250,8 @@ export default function StudioScreen({ route, navigation }) {
   };
 
   const handleSynthesize = async () => {
-    if (!script || !currentEpisodeId || synthesizing) return;
+    if (!script || !currentSeriesId || !currentEpisodeId || synthesizing) return;
 
-    // Pre-flight: 모든 씬에 이미지 + 오디오가 있는지 확인
     const missing = script.scenes.reduce((acc, _, idx) => {
       if (!sceneImages[idx] || !sceneAudios[idx]) acc.push(idx + 1);
       return acc;
@@ -244,12 +267,79 @@ export default function StudioScreen({ route, navigation }) {
 
     setSynthesizing(true);
     try {
-      const result = await generateFinalVideoFn({ creatorId: creator.id, episodeId: currentEpisodeId });
+      const result = await generateFinalVideoFn({
+        creatorId: creator.id,
+        seriesId: currentSeriesId,
+        episodeId: currentEpisodeId,
+      });
       setVideoUrl(result.data.videoUrl);
     } catch (e) {
       Alert.alert('렌더링 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
     } finally {
       setSynthesizing(false);
+    }
+  };
+
+  // ── 원클릭 통짜 빌드: 이미지(순차) → 오디오(병렬) → 영상 → 갤러리 ──
+  const handleBulkBuild = async () => {
+    if (!script || !currentSeriesId || !currentEpisodeId) return;
+    const total = script.scenes.length;
+    const newImages = {};
+    const newAudios = {};
+
+    try {
+      // 1. 이미지 순차 생성 (rate limit 회피)
+      for (let i = 0; i < total; i++) {
+        setBulkProgress({ phase: 'image', current: i + 1, total });
+        const result = await generateSceneImageFn({
+          visualPrompt: script.scenes[i].direction,
+          creatorId: creator.id,
+          seriesId: currentSeriesId,
+          episodeId: currentEpisodeId,
+          sceneIndex: i,
+        });
+        newImages[i] = result.data.imageUrl;
+        setSceneImages((prev) => ({ ...prev, [i]: result.data.imageUrl }));
+      }
+
+      // 2. 오디오 병렬 생성
+      setBulkProgress({ phase: 'audio', current: 0, total });
+      await Promise.all(
+        script.scenes.map(async (scene, i) => {
+          const result = await generateSceneAudioFn({
+            dialogue: scene.dialogue,
+            voice: 'nova',
+            creatorId: creator.id,
+            seriesId: currentSeriesId,
+            episodeId: currentEpisodeId,
+            sceneIndex: i,
+          });
+          newAudios[i] = result.data.audioUri;
+          setSceneAudios((prev) => ({ ...prev, [i]: result.data.audioUri }));
+          setBulkProgress((prev) => ({ ...prev, current: prev.current + 1 }));
+        })
+      );
+
+      // 3. Firestore 일괄 저장 (generateFinalVideo가 읽기 전에 완료 필요)
+      setBulkProgress({ phase: 'video', current: 0, total: 1 });
+      await updateDoc(episodeDoc(creator.id, currentSeriesId, currentEpisodeId), {
+        scenes: buildScenesPayload(script.scenes, newImages, newAudios),
+      });
+
+      // 4. 최종 영상 렌더링
+      const videoResult = await generateFinalVideoFn({
+        creatorId: creator.id,
+        seriesId: currentSeriesId,
+        episodeId: currentEpisodeId,
+      });
+      setVideoUrl(videoResult.data.videoUrl);
+
+      // 5. 갤러리로 이동
+      navigation.navigate('Gallery', { creator });
+    } catch (e) {
+      Alert.alert('자동 빌드 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
+    } finally {
+      setBulkProgress({ phase: null, current: 0, total: 0 });
     }
   };
 
@@ -468,29 +558,75 @@ export default function StudioScreen({ route, navigation }) {
         ) : null}
       </ScrollView>
 
-      {/* ── 고정 하단 합성 버튼 ── */}
+      {/* ── 고정 하단 버튼 영역 ── */}
       {script ? (
         <View style={styles.fixedFooter}>
+          {/* 🚀 원클릭 통짜 빌드 */}
           <TouchableOpacity
-            style={[styles.synthBtn, synthesizing && styles.synthBtnDisabled]}
-            onPress={handleSynthesize}
-            disabled={synthesizing}
+            style={[styles.bulkBtn, bulkProgress.phase !== null && styles.bulkBtnDisabled]}
+            onPress={handleBulkBuild}
+            disabled={bulkProgress.phase !== null || synthesizing}
             activeOpacity={0.88}
           >
-            {synthesizing ? (
+            {bulkProgress.phase === 'image' ? (
               <>
                 <ActivityIndicator color="#fff" size="small" />
-                <Text style={styles.synthBtnText}>클라우드 렌더링 공장 가동 중... (최대 2분 소요)</Text>
+                <Text style={styles.bulkBtnText}>
+                  🖼 이미지 생성 중... ({bulkProgress.current}/{bulkProgress.total})
+                </Text>
+              </>
+            ) : bulkProgress.phase === 'audio' ? (
+              <>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.bulkBtnText}>
+                  🔊 더빙 생성 중... ({bulkProgress.current}/{bulkProgress.total})
+                </Text>
+              </>
+            ) : bulkProgress.phase === 'video' ? (
+              <>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.bulkBtnText}>🎬 최종 영상 렌더링 중...</Text>
               </>
             ) : (
               <>
-                <Text style={styles.synthBtnIcon}>🎥</Text>
-                <Text style={styles.synthBtnText}>
-                  {videoUrl ? '영상 재렌더링하기' : '전체 숏폼 영상으로 합성하기'}
-                </Text>
+                <Text style={styles.bulkBtnIcon}>🚀</Text>
+                <Text style={styles.bulkBtnText}>이 에피소드 통짜 영상 제작</Text>
               </>
             )}
           </TouchableOpacity>
+
+          {/* 하단 보조 버튼 행 */}
+          <View style={styles.footerSecondaryRow}>
+            <TouchableOpacity
+              style={[styles.synthBtn, synthesizing && styles.synthBtnDisabled]}
+              onPress={handleSynthesize}
+              disabled={synthesizing || bulkProgress.phase !== null}
+              activeOpacity={0.88}
+            >
+              {synthesizing ? (
+                <>
+                  <ActivityIndicator color="#fff" size="small" />
+                  <Text style={styles.synthBtnText}>렌더링 중...</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.synthBtnIcon}>🎥</Text>
+                  <Text style={styles.synthBtnText}>
+                    {videoUrl ? '재렌더링' : '수동 합성'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.galleryBtn}
+              onPress={() => navigation.navigate('Gallery', { creator })}
+              activeOpacity={0.82}
+            >
+              <Text style={styles.galleryBtnIcon}>🎞</Text>
+              <Text style={styles.galleryBtnText}>보관함</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : null}
 
@@ -514,7 +650,6 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F5F7FA' },
   scroll: { flex: 1 },
   inner: { padding: 16, paddingBottom: 32 },
-  innerWithFooter: { paddingBottom: 112 },
 
   initLoadingScreen: { flex: 1, backgroundColor: '#F5F7FA', alignItems: 'center', justifyContent: 'center', gap: 16 },
   initLoadingText: { fontSize: 14, color: '#6B7280' },
@@ -594,11 +729,23 @@ const styles = StyleSheet.create({
   audioPlayBtnTextActive: { color: '#fff' },
 
   // 고정 하단
-  fixedFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 24, paddingTop: 10, backgroundColor: '#F5F7FA', borderTopWidth: 1, borderTopColor: '#E5E7EB' },
-  synthBtn: { backgroundColor: '#1A1A2E', borderRadius: 16, paddingVertical: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, shadowColor: '#1A1A2E', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
+  fixedFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 24, paddingTop: 10, backgroundColor: '#F5F7FA', borderTopWidth: 1, borderTopColor: '#E5E7EB', gap: 8 },
+  innerWithFooter: { paddingBottom: 160 },
+
+  bulkBtn: { backgroundColor: '#7C3AED', borderRadius: 16, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, shadowColor: '#7C3AED', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
+  bulkBtnDisabled: { opacity: 0.7, elevation: 2 },
+  bulkBtnIcon: { fontSize: 20 },
+  bulkBtnText: { fontSize: 15, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+
+  footerSecondaryRow: { flexDirection: 'row', gap: 8 },
+  synthBtn: { flex: 1, backgroundColor: '#1A1A2E', borderRadius: 14, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: '#1A1A2E', shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
   synthBtnDisabled: { opacity: 0.75, elevation: 2 },
-  synthBtnIcon: { fontSize: 22 },
-  synthBtnText: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+  synthBtnIcon: { fontSize: 18 },
+  synthBtnText: { fontSize: 14, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+
+  galleryBtn: { paddingHorizontal: 18, backgroundColor: '#4A90E2', borderRadius: 14, paddingVertical: 14, alignItems: 'center', justifyContent: 'center', gap: 4, shadowColor: '#4A90E2', shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
+  galleryBtnIcon: { fontSize: 18 },
+  galleryBtnText: { fontSize: 11, fontWeight: '800', color: '#fff' },
 
   // 영상 플레이어
   videoSection: { marginBottom: 16, backgroundColor: '#1A1A2E', borderRadius: 20, overflow: 'hidden', shadowColor: '#1A1A2E', shadowOpacity: 0.25, shadowRadius: 14, elevation: 8 },

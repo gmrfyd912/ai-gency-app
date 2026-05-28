@@ -13,6 +13,7 @@ import {
 import { Audio, ResizeMode, Video } from 'expo-av';
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
   limit,
@@ -25,9 +26,10 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../services/firebase';
 
 // ── Cloud Function 클라이언트 ─────────────────────────────────
-const generateSceneImageFn = httpsCallable(functions, 'generateSceneImage', { timeout: 90000 });
-const generateSceneAudioFn = httpsCallable(functions, 'generateSceneAudio');
-const generateFinalVideoFn = httpsCallable(functions, 'generateFinalVideo', { timeout: 300000 });
+const generateSceneImageFn  = httpsCallable(functions, 'generateSceneImage',  { timeout: 90000  });
+const generateSceneAudioFn  = httpsCallable(functions, 'generateSceneAudio');
+const generateFinalVideoFn  = httpsCallable(functions, 'generateFinalVideo',  { timeout: 300000 });
+const deleteCreatorDataFn   = httpsCallable(functions, 'deleteCreatorData',   { timeout: 120000 });
 
 // ── 상수 ─────────────────────────────────────────────────────
 const pad = (n) => String(n).padStart(2, '0');
@@ -77,6 +79,9 @@ export default function StudioScreen({ route, navigation }) {
   // ── 원클릭 통짜 빌드 진행 상태 ────────────────────────────
   // phase: null | 'image' | 'audio' | 'video'
   const [bulkProgress, setBulkProgress] = useState({ phase: null, current: 0, total: 0 });
+
+  // ── 크리에이터 삭제 상태 ─────────────────────────────────
+  const [deleting, setDeleting] = useState(false);
 
   // ── SynopsisScreen에서 씬 분할 완료 후 전달된 신규 에피소드 수신 ──
   useEffect(() => {
@@ -343,6 +348,55 @@ export default function StudioScreen({ route, navigation }) {
     }
   };
 
+  // ── 크리에이터 삭제 얼럿 및 처리 ────────────────────────
+  const handleDeleteCreator = () => {
+    Alert.alert(
+      '크리에이터 삭제',
+      '이 크리에이터를 삭제하시겠습니까? 그동안 이 크리에이터가 생성한 모든 시리즈 스토리와 영상(MP4)도 함께 삭제할지 선택해주세요.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '크리에이터만 삭제',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await deleteDoc(doc(db, 'creators', creator.id));
+              Alert.alert(
+                '삭제 완료',
+                `${creator.name} 크리에이터가 삭제되었습니다.\n(시리즈/영상 데이터는 보존됩니다)`,
+                [{ text: '확인', onPress: () => navigation.navigate('CreatorsList') }]
+              );
+            } catch (e) {
+              Alert.alert('삭제 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+        {
+          text: '🔥 전체 데이터 포함 삭제',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await deleteCreatorDataFn({ creatorId: creator.id });
+              Alert.alert(
+                '전체 삭제 완료',
+                `${creator.name} 크리에이터와 모든 시리즈, 에피소드, 미디어 파일이 삭제되었습니다.`,
+                [{ text: '확인', onPress: () => navigation.navigate('CreatorsList') }]
+              );
+            } catch (e) {
+              Alert.alert('삭제 실패', (e?.message ?? '알 수 없는 오류').slice(0, 100));
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // ── 초기 로딩 화면 ───────────────────────────────────────
   if (initialLoading) {
     return (
@@ -356,6 +410,17 @@ export default function StudioScreen({ route, navigation }) {
   // ── 메인 렌더 ────────────────────────────────────────────
   return (
     <View style={styles.root}>
+
+      {/* ── 삭제 진행 로딩 오버레이 ── */}
+      <Modal visible={deleting} transparent animationType="fade" statusBarTranslucent>
+        <View style={styles.deletingOverlay}>
+          <View style={styles.deletingCard}>
+            <ActivityIndicator size="large" color="#DC2626" style={{ marginBottom: 12 }} />
+            <Text style={styles.deletingText}>데이터 삭제 중...</Text>
+            <Text style={styles.deletingHint}>잠시만 기다려주세요</Text>
+          </View>
+        </View>
+      </Modal>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.inner, script && styles.innerWithFooter]}
@@ -375,6 +440,16 @@ export default function StudioScreen({ route, navigation }) {
               <Text style={styles.creatorName}>{creator.name}</Text>
               {creator.voice ? <Text style={styles.voiceTag}>🎙 {creator.voice}</Text> : null}
             </View>
+
+            {/* 삭제 버튼 — 우측 상단 */}
+            <TouchableOpacity
+              style={styles.deleteCreatorBtn}
+              onPress={handleDeleteCreator}
+              disabled={deleting}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.deleteCreatorBtnIcon}>🗑</Text>
+            </TouchableOpacity>
           </View>
           {creator.persona ? (
             <Text style={styles.personaText} numberOfLines={3}>{creator.persona}</Text>
@@ -760,4 +835,25 @@ const styles = StyleSheet.create({
   modalImage: { width: '90%', height: '82%', borderRadius: 16 },
   modalCloseHint: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 24 },
   modalCloseText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+
+  // 크리에이터 삭제 버튼 (프로필 카드 우측 상단)
+  deleteCreatorBtn: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: '#FECACA', flexShrink: 0,
+  },
+  deleteCreatorBtnIcon: { fontSize: 16 },
+
+  // 삭제 진행 오버레이
+  deletingOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center', justifyContent: 'center', padding: 32,
+  },
+  deletingCard: {
+    backgroundColor: '#1A1A2E', borderRadius: 20, padding: 28,
+    alignItems: 'center', gap: 4, width: '70%',
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 16, elevation: 16,
+  },
+  deletingText: { fontSize: 16, fontWeight: '800', color: '#fff', marginBottom: 4 },
+  deletingHint: { fontSize: 12, color: '#6B7280' },
 });

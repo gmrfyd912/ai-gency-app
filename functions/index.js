@@ -864,3 +864,65 @@ exports.generatePersonaDraft = onCall(async (request) => {
     throw new HttpsError("internal", `페르소나 생성 실패: ${error.message}`);
   }
 });
+
+// ────────────────────────────────────────────────────────────
+// 크리에이터 전체 데이터 연쇄 삭제
+// Firestore: series > episodes 전량 + creator 문서
+// Storage: creators/{creatorId}/ 하위 모든 파일
+// ────────────────────────────────────────────────────────────
+exports.deleteCreatorData = onCall(
+  { timeoutSeconds: 120, memory: "256MiB" },
+  async (request) => {
+    const { creatorId } = request.data;
+
+    if (!creatorId) {
+      throw new HttpsError("invalid-argument", "creatorId는 필수입니다.");
+    }
+
+    try {
+      // ── 1. Storage 하위 파일 전체 삭제 ──────────────────────
+      try {
+        await admin.storage().bucket().deleteFiles({
+          prefix: `creators/${creatorId}/`,
+          force: true,
+        });
+        console.log("[deleteCreatorData] Storage 삭제 완료:", creatorId);
+      } catch (storageErr) {
+        // Storage 오류는 치명적이지 않으므로 경고만 기록 후 진행
+        console.warn("[deleteCreatorData] Storage 삭제 경고 (계속 진행):", storageErr.message);
+      }
+
+      // ── 2. Firestore: series > episodes 연쇄 삭제 ───────────
+      const seriesSnap = await adminDb
+        .collection("creators").doc(creatorId)
+        .collection("series").get();
+
+      let deletedEpisodes = 0;
+      for (const seriesDoc of seriesSnap.docs) {
+        const episodesSnap = await seriesDoc.ref.collection("episodes").get();
+        for (const epDoc of episodesSnap.docs) {
+          await epDoc.ref.delete();
+          deletedEpisodes++;
+        }
+        await seriesDoc.ref.delete();
+      }
+      console.log(
+        `[deleteCreatorData] Firestore 삭제 완료 — 시리즈: ${seriesSnap.size}, 에피소드: ${deletedEpisodes}`
+      );
+
+      // ── 3. 크리에이터 문서 삭제 ─────────────────────────────
+      await adminDb.collection("creators").doc(creatorId).delete();
+      console.log("[deleteCreatorData] 크리에이터 문서 삭제 완료:", creatorId);
+
+      return {
+        success: true,
+        deletedSeries: seriesSnap.size,
+        deletedEpisodes,
+      };
+    } catch (error) {
+      console.error("[deleteCreatorData] 오류:", error.message);
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", `삭제 실패: ${error.message}`);
+    }
+  }
+);

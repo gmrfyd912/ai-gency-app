@@ -177,7 +177,7 @@ export default function StudioScreen({ route, navigation }) {
     setSceneLoadingIdx(idx);
     try {
       const result = await generateSceneImageFn({
-        visualPrompt: direction,
+        visualPrompt: (script?.scenes[idx]?.visualPrompt) ?? direction,
         creatorId: creator.id,
         seriesId: currentSeriesId,
         episodeId: currentEpisodeId,
@@ -292,7 +292,7 @@ export default function StudioScreen({ route, navigation }) {
       for (let i = 0; i < total; i++) {
         setBulkProgress({ phase: 'image', current: i + 1, total });
         const result = await generateSceneImageFn({
-          visualPrompt: script.scenes[i].direction,
+          visualPrompt: script.scenes[i].visualPrompt ?? script.scenes[i].direction,
           creatorId: creator.id,
           seriesId: currentSeriesId,
           episodeId: currentEpisodeId,
@@ -499,7 +499,7 @@ export default function StudioScreen({ route, navigation }) {
                     ) : (
                       <TouchableOpacity
                         style={[styles.actionBtn, { borderColor: accentColor }, isAnyImgLoad && styles.actionBtnDisabled]}
-                        onPress={() => handleRenderScene(idx, scene.direction)}
+                        onPress={() => handleRenderScene(idx, scene.visualPrompt ?? scene.direction)}
                         disabled={isAnyImgLoad}
                         activeOpacity={0.75}
                       >

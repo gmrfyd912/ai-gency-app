@@ -383,10 +383,62 @@ originalFullText의 플롯·갈등·결말을 그대로 유지하면서 ${name}�
 );
 
 // ────────────────────────────────────────────────────────────
-// 확정된 시놉시스 → 1화 5개 씬으로 분할 (generateContent 대체)
+// 시네마틱 초정밀 이미지 프롬프트 생성기 (GPT-4o 전문 촬영 감독 모드)
+// 각 씬의 direction(한국어 연출 지시문)을 gpt-image-2에 최적화된
+// 초정밀 영문 시네마틱 프롬프트로 변환
+// ────────────────────────────────────────────────────────────
+async function generateCinematicPrompts(scenes, name, persona) {
+  const openai = new OpenAI();
+
+  const systemPrompt = `You are a professional cinematographer generating ultra-precise image prompts for a vertical 9:16 short-form video series.
+
+CREATOR PROFILE — embed this in EVERY prompt without exception:
+Name: ${name}
+Persona description: ${persona ?? "young adult content creator"}
+
+MANDATORY STRUCTURE — every prompt MUST include all 4 elements:
+① CAMERA ANGLE & LENS: exact shot type (extreme close-up / medium shot / wide establishing shot / over-the-shoulder / low-angle / high-angle / POV) + lens character (50mm portrait / 24mm wide / 85mm telephoto bokeh)
+② SUBJECT: precise physical appearance derived from the creator persona — gender, approximate age, facial expression, body posture, clothing details. NEVER depict a subject whose gender or age contradicts the creator profile.
+③ LIGHTING & COLOR: specific light source + direction + color temperature (e.g., "warm 3200K golden sunlight streaming through frosted glass from upper left", "cold 6500K blue neon sign reflecting off rain-soaked asphalt", "harsh 5600K fluorescent overhead casting deep shadows")
+④ BACKGROUND DETAILS: 2–3 concrete environmental elements that reinforce the narrative (e.g., "worn laminated menu board, grease-stained counter, flickering strip light overhead", "stack of overdue invoices, cold coffee in paper cup, rain-streaked office window at night")
+
+PROHIBITIONS:
+- No abstract emotional adjectives without visual grounding ("beautiful", "sad", "dramatic" alone are banned)
+- No subject whose appearance contradicts the creator persona profile
+- No generic descriptions ("a person", "outdoor setting", "nice lighting")
+- Do NOT include any Korean text in the prompts
+
+OUTPUT: JSON only → { "prompts": ["full English prompt for scene 1", "full English prompt for scene 2", ...] }`;
+
+  const scenesText = scenes
+    .map((s, i) => `Scene ${i + 1} (Korean direction): ${s.direction}`)
+    .join("\n\n");
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o",
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `Convert all ${scenes.length} scene directions below into cinematic image generation prompts.\n\n${scenesText}`,
+      },
+    ],
+    temperature: 0.7,
+    max_tokens: 3000,
+  });
+
+  const result = JSON.parse(completion.choices[0].message.content);
+  const prompts = Array.isArray(result.prompts) ? result.prompts : [];
+  console.log("[generateCinematicPrompts] 변환 완료, 프롬프트 수:", prompts.length);
+  return prompts;
+}
+
+// ────────────────────────────────────────────────────────────
+// 확정된 시놉시스 → 씬 분할 + 시네마틱 비주얼 프롬프트 자동 생성
 // ────────────────────────────────────────────────────────────
 exports.generateScenesFromSynopsis = onCall(
-  { timeoutSeconds: 60, memory: "256MiB" },
+  { timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     const openai = new OpenAI();
     const { synopsis, name, persona } = request.data;
@@ -423,6 +475,7 @@ ${synopsis}
 - 1화 내용 기반으로 구성하고 말미에 2화 예고 뉘앙스 포함`;
 
     try {
+      // ── Step 1: 씬 대본 분할 (gpt-4o-mini) ──────────────────
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         response_format: { type: "json_object" },
@@ -436,8 +489,17 @@ ${synopsis}
       if (!parsed.title || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
         throw new HttpsError("internal", "AI 응답 형식이 올바르지 않습니다.");
       }
-      console.log("[generateScenesFromSynopsis] 성공, 씬 수:", parsed.scenes.length);
-      return { title: parsed.title, scenes: parsed.scenes };
+      console.log("[generateScenesFromSynopsis] 씬 분할 완료, 씬 수:", parsed.scenes.length);
+
+      // ── Step 2: 시네마틱 초정밀 프롬프트 변환 (gpt-4o) ──────
+      const cinematicPrompts = await generateCinematicPrompts(parsed.scenes, name, persona);
+
+      const scenesWithVisualPrompts = parsed.scenes.map((scene, i) => ({
+        ...scene,
+        visualPrompt: cinematicPrompts[i] ?? scene.direction,
+      }));
+
+      return { title: parsed.title, scenes: scenesWithVisualPrompts };
     } catch (error) {
       console.error("[generateScenesFromSynopsis] 오류:", error.message);
       if (error instanceof HttpsError) throw error;
@@ -521,7 +583,8 @@ exports.generateSceneImage = onCall(
       throw new HttpsError("internal", "OPENAI_API_KEY 환경 변수가 없습니다.");
     }
 
-    const enhancedPrompt = `Cinematic short-form social media video frame. ${visualPrompt} High quality, vibrant colors, vertical smartphone video style, professional lighting.`;
+    // visualPrompt is already a GPT-4o cinematic prompt — append format/quality specs only
+    const enhancedPrompt = `${visualPrompt}. Vertical 9:16 smartphone format, photorealistic, ultra-sharp focus, cinematic color grade, no text overlays.`;
     console.log("[generateSceneImage] 시작, sceneIndex:", sceneIndex);
 
     let res;

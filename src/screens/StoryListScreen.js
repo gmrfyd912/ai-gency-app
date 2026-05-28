@@ -126,7 +126,7 @@ export default function StoryListScreen({ route, navigation }) {
       for (let i = 0; i < total; i++) {
         setProducing((p) => ({ ...p, current: i + 1 }));
         const imgRes = await generateSceneImageFn({
-          visualPrompt: scenes[i].direction,
+          visualPrompt: scenes[i].visualPrompt ?? scenes[i].direction,
           creatorId:    creator.id,
           seriesId:     story.id,
           episodeId,

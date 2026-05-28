@@ -7,6 +7,7 @@ import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import DashboardScreen from './src/screens/DashboardScreen';
 import CreatorsStack from './src/navigation/CreatorsStack';
+import StoryArchiveTab from './src/navigation/StoryArchiveTab';
 
 // 폰트 로딩 완료 전까지 스플래시 자동 숨김 방지
 SplashScreen.preventAutoHideAsync();
@@ -59,6 +60,16 @@ export default function App() {
               headerShown: false,
               tabBarIcon: ({ color, size }) => (
                 <Ionicons name="people" color={color} size={size} />
+              ),
+            }}
+          />
+          <Tab.Screen
+            name="보관함"
+            component={StoryArchiveTab}
+            options={{
+              headerShown: false,
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="library" color={color} size={size} />
               ),
             }}
           />

@@ -37,7 +37,7 @@ const episodesCol   = (cid, sid)      => collection(db, 'creators', cid, 'series
 const episodeDocRef = (cid, sid, eid) => doc(db, 'creators', cid, 'series', sid, 'episodes', eid);
 
 export default function StoryListScreen({ route, navigation }) {
-  const { creator } = route.params;
+  const { creator, initialSeriesId } = route.params;
 
   const [stories,        setStories]        = useState([]);
   const [loading,        setLoading]        = useState(true);
@@ -56,6 +56,14 @@ export default function StoryListScreen({ route, navigation }) {
   // { videoUrl, title }
 
   useEffect(() => { loadStories(); }, []);
+
+  // 스토리 로드 완료 후 initialSeriesId 자동 확장
+  useEffect(() => {
+    if (!loading && initialSeriesId) {
+      setExpandedId(initialSeriesId);
+      loadEpisodeStatus(initialSeriesId);
+    }
+  }, [loading, initialSeriesId]);
 
   const loadStories = async () => {
     setLoading(true);

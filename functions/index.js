@@ -6,6 +6,8 @@ const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { google } = require("googleapis");
+const { YoutubeTranscript } = require("youtube-transcript");
 
 // Firebase Admin SDK 초기화 (Firestore 서버 사이드 쓰기용)
 admin.initializeApp();
@@ -170,6 +172,67 @@ async function searchTrendingStories(query) {
 }
 
 // ────────────────────────────────────────────────────────────
+// YouTube Shorts 검색 + 자막(Transcript) 추출 헬퍼
+// YOUTUBE_API_KEY 는 functions/.env 에서 로드
+// ────────────────────────────────────────────────────────────
+async function searchYoutubeShortsTranscript(keyword, maxResults = 3) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) throw new Error("YOUTUBE_API_KEY가 설정되지 않았습니다.");
+
+  const youtube = google.youtube({ version: "v3", auth: apiKey });
+
+  // Step A: YouTube Data API v3 — Shorts 검색 (조회수 순)
+  const searchRes = await youtube.search.list({
+    part: "snippet",
+    q: `${keyword} #shorts`,
+    type: "video",
+    videoDuration: "short",
+    maxResults,
+    order: "viewCount",
+    relevanceLanguage: "ko",
+    regionCode: "KR",
+  });
+
+  const items = searchRes.data.items ?? [];
+  if (items.length === 0) {
+    return { results: [] };
+  }
+
+  // Step B: 각 videoId에서 Transcript 추출 후 텍스트 합산
+  const results = [];
+  for (const item of items) {
+    const videoId = item.id?.videoId;
+    const title = item.snippet?.title ?? "";
+    if (!videoId) continue;
+
+    let transcript = "";
+    try {
+      const segments = await YoutubeTranscript.fetchTranscript(videoId, { lang: "ko" });
+      transcript = segments.map((s) => s.text).join(" ").trim();
+    } catch (_) {
+      // 한국어 자막 없으면 영어 시도
+      try {
+        const segments = await YoutubeTranscript.fetchTranscript(videoId);
+        transcript = segments.map((s) => s.text).join(" ").trim();
+      } catch (_inner) {
+        transcript = "";
+      }
+    }
+
+    if (transcript.length > 0) {
+      results.push({
+        videoId,
+        title,
+        url: `https://www.youtube.com/shorts/${videoId}`,
+        transcript: transcript.slice(0, 4000),
+      });
+    }
+  }
+
+  return { results };
+}
+
+// ────────────────────────────────────────────────────────────
 // 자율 검색 AI 에이전트: Function Calling → 웹 검색 → 원본 전문 추출 → 각색
 // 완료 후 Firestore series 자동 저장, seriesId 반환
 // ────────────────────────────────────────────────────────────
@@ -189,7 +252,7 @@ exports.generateSynopsis = onCall(
       function: {
         name: "search_trending_stories",
         description:
-          "틱톡·유튜브 쇼츠·인스타그램 릴스·온라인 커뮤니티(에펨코리아·블라인드·네이트판)에서 현재 바이럴 중인 레전드 썰·사이다 스토리·역전 드라마를 웹에서 실시간 검색한다. 각색 베이스를 찾을 때 반드시 먼저 호출한다.",
+          "텍스트 기반 바이럴 콘텐츠(네이트판·에펨코리아·블라인드·온라인 커뮤니티)에서 실제로 터진 썰·사이다 스토리·역전 드라마를 웹에서 실시간 검색한다. 주제가 '인간관계 갈등', '직장 썰', '연애 막장', '복수 드라마' 등 텍스트 스토리텔링에 어울릴 때 호출한다.",
         parameters: {
           type: "object",
           properties: {
@@ -204,17 +267,42 @@ exports.generateSynopsis = onCall(
       },
     };
 
-    const systemPrompt = `너는 바이럴 스토리 각색 전문가다. 검색된 원본 스토리의 재미 요소를 100% 살려 N부작 숏폼 시리즈로 구조화하는 것이 유일한 임무다.
+    const YOUTUBE_TOOL = {
+      type: "function",
+      function: {
+        name: "search_youtube_shorts_transcript",
+        description:
+          "유튜브 쇼츠에서 실제 영상을 검색하고, 해당 영상의 실제 음성 대사(자막/Transcript)를 100% 텍스트로 추출한다. 주제가 '뷰티·스킨케어', '꿀팁·생활정보', '브이로그', '먹방', '운동·헬스', '요리', '여행', '챌린지', '리뷰' 등 실제 영상 콘텐츠를 기반으로 각색할 때 호출한다. 실제 영상 크리에이터의 말투·표현·구성을 그대로 차용하여 각색 베이스로 삼는다.",
+        parameters: {
+          type: "object",
+          properties: {
+            keyword: {
+              type: "string",
+              description:
+                "유튜브 쇼츠 검색 키워드 (한국어). 크리에이터 분야에 맞는 실제 영상 콘텐츠 유형 명시. 예: '피부 관리 꿀팁', '자취 요리 간단 레시피', '홈트 루틴 10분'",
+            },
+          },
+          required: ["keyword"],
+        },
+      },
+    };
+
+    const systemPrompt = `너는 바이럴 스토리 각색 전문가다. 검색된 원본 콘텐츠의 재미 요소를 100% 살려 N부작 숏폼 시리즈로 구조화하는 것이 유일한 임무다.
+
+【도구 자율 선택 기준 — 반드시 준수】
+- 주제가 '썰', '갈등 드라마', '인간관계', '직장', '연애 막장', '복수', '사이다' 등 텍스트 스토리 기반이면 → search_trending_stories 호출
+- 주제가 '뷰티', '꿀팁', '브이로그', '먹방', '운동', '요리', '여행', '챌린지', '리뷰', '정보성' 등 실제 영상 콘텐츠 기반이면 → search_youtube_shorts_transcript 호출
+- 두 성격이 혼재하면 페르소나의 핵심 분야를 기준으로 하나를 선택한다.
 
 【절대 금지 — 위반 시 실패 처리】
 - 검색된 원본 본문을 무시하고 뻔하고 건전한 새 이야기를 지어내는 행위
-- 원본의 자극적이거나 유머러스한 갈등 포인트를 "순화"하여 밋밋하게 만드는 행위
-- 원본에 없는 AI식 클리셰("알고 보니 오해였다", "사실 다 계획이었다", "서로 화해했다") 임의 삽입
+- 원본의 자극적이거나 유머러스한 포인트를 "순화"하여 밋밋하게 만드는 행위
+- 원본에 없는 AI식 클리셰 임의 삽입
 - 검색 도구를 호출하지 않고 훈련 데이터만으로 이야기를 창작하는 행위
 
 【반드시 지켜야 할 원칙】
-1. 작업 시작 시 반드시 search_trending_stories 도구를 먼저 호출하여 원본 본문(raw_content)을 확보하라.
-2. 확보한 원본 본문의 구체적 사건·갈등 포인트·인물 특징·결말을 그대로 보존하라.
+1. 작업 시작 시 반드시 위 기준에 맞는 도구를 먼저 호출하여 원본 콘텐츠를 확보하라.
+2. 확보한 원본의 구체적 사건·갈등 포인트·말투·표현·결말을 그대로 보존하라.
 3. 너의 역할은 오직 "호흡 조절과 편수 구조화"뿐이다: 원본을 N화로 나누고 각 화 말미에 클리프행어를 배치하라.
 4. 원본이 막장이면 막장으로, 사이다면 사이다로, 웃기면 웃기게 — 원본의 톤과 강도를 그대로 유지하라.
 5. 반드시 유효한 JSON만 반환하고 다른 텍스트는 절대 포함하지 마라.`;
@@ -236,7 +324,7 @@ exports.generateSynopsis = onCall(
       const step1 = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages,
-        tools: [SEARCH_TOOL],
+        tools: [SEARCH_TOOL, YOUTUBE_TOOL],
         tool_choice: "auto",
       });
 
@@ -244,23 +332,42 @@ exports.generateSynopsis = onCall(
       messages.push(assistantMsg);
       console.log("[generateSynopsis] Step1 finish_reason:", step1.choices[0].finish_reason);
 
-      // ── Step 2: 검색 도구가 호출된 경우 실제 웹 검색 실행 ──────
+      // ── Step 2: 도구 호출 처리 (Tavily 또는 YouTube 분기) ──────
       for (const toolCall of assistantMsg.tool_calls ?? []) {
-        if (toolCall.function.name !== "search_trending_stories") continue;
-
-        let args;
-        try { args = JSON.parse(toolCall.function.arguments); } catch (_) { args = {}; }
-        const query = args.query ?? `${persona} 바이럴 스토리 레전드 썰`;
-        console.log("[generateSynopsis] 검색 쿼리:", query);
-
         let searchContent;
-        try {
-          const result = await searchTrendingStories(query);
-          searchContent = JSON.stringify(result);
-          console.log("[generateSynopsis] 검색 완료, 결과 수:", result.results?.length);
-        } catch (e) {
-          console.warn("[generateSynopsis] 검색 실패, 폴백:", e.message);
-          searchContent = JSON.stringify({ answer: "", results: [] });
+
+        if (toolCall.function.name === "search_trending_stories") {
+          let args;
+          try { args = JSON.parse(toolCall.function.arguments); } catch (_) { args = {}; }
+          const query = args.query ?? `${persona} 바이럴 스토리 레전드 썰`;
+          console.log("[generateSynopsis] Tavily 검색 쿼리:", query);
+
+          try {
+            const result = await searchTrendingStories(query);
+            searchContent = JSON.stringify(result);
+            console.log("[generateSynopsis] Tavily 검색 완료, 결과 수:", result.results?.length);
+          } catch (e) {
+            console.warn("[generateSynopsis] Tavily 검색 실패, 폴백:", e.message);
+            searchContent = JSON.stringify({ answer: "", results: [] });
+          }
+
+        } else if (toolCall.function.name === "search_youtube_shorts_transcript") {
+          let args;
+          try { args = JSON.parse(toolCall.function.arguments); } catch (_) { args = {}; }
+          const keyword = args.keyword ?? `${persona} 쇼츠`;
+          console.log("[generateSynopsis] YouTube 검색 키워드:", keyword);
+
+          try {
+            const result = await searchYoutubeShortsTranscript(keyword);
+            searchContent = JSON.stringify(result);
+            console.log("[generateSynopsis] YouTube 자막 추출 완료, 결과 수:", result.results?.length);
+          } catch (e) {
+            console.warn("[generateSynopsis] YouTube 추출 실패, 폴백:", e.message);
+            searchContent = JSON.stringify({ results: [] });
+          }
+
+        } else {
+          continue;
         }
 
         messages.push({
@@ -273,11 +380,12 @@ exports.generateSynopsis = onCall(
       // ── Step 3: 검색 결과 기반 시놉시스 JSON 최종 생성 ─────────
       messages.push({
         role: "user",
-        content: `위에서 검색된 원본 본문들 중 가장 스토리가 완전하고 흥미로운 원문을 선택하여 아래 JSON 형식으로 응답하라.
+        content: `위에서 검색된 원본 콘텐츠(웹 스토리 또는 유튜브 쇼츠 실제 대사) 중 가장 풍부하고 흥미로운 것을 선택하여 아래 JSON 형식으로 응답하라.
+유튜브 쇼츠 자막이 원본인 경우, transcript 필드의 실제 대사를 originalFullText에 그대로 사용하라.
 
 【1단계 — 원본 전문 추출 (절대 요약·축약 금지)】
-가장 재미있는 원본을 골라 핵심 이야기 본문 전체를 originalFullText에 그대로 옮겨라.
-광고·사이트 메뉴·관련 링크 등 스토리와 무관한 텍스트는 제거하되, 실제 이야기 본문은 한 자도 줄이지 마라. (최소 400자 이상)
+가장 재미있는 원본을 골라 핵심 이야기/대사 본문 전체를 originalFullText에 그대로 옮겨라.
+광고·사이트 메뉴·관련 링크 등 콘텐츠와 무관한 텍스트는 제거하되, 실제 이야기·대사 본문은 한 자도 줄이지 마라. (최소 400자 이상)
 
 【2단계 — N부작 시리즈 구조화 (원본 톤·결말 완전 보존)】
 originalFullText의 플롯·갈등·결말을 그대로 유지하면서 ${name}의 페르소나에 맞는 인물·배경으로만 바꿔 4~10화 시리즈로 구조화하라.

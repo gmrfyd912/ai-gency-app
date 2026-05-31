@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,11 +11,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { ResizeMode, Video } from 'expo-av';
+import { Audio, ResizeMode, Video } from 'expo-av';
 import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
@@ -30,6 +31,7 @@ const generateScenesFromSynopsisFn = httpsCallable(functions, 'generateScenesFro
 const generateSceneImageFn         = httpsCallable(functions, 'generateSceneImage',          { timeout: 120000 });
 const generateSceneAudioFn         = httpsCallable(functions, 'generateSceneAudio',          { timeout: 60000  });
 const generateFinalVideoFn         = httpsCallable(functions, 'generateFinalVideo',          { timeout: 540000 });
+const generateAudioFn              = httpsCallable(functions, 'generateAudio',               { timeout: 120000 });
 
 // ── Firestore 경로 헬퍼 ─────────────────────────────────────
 const seriesCol     = (cid)           => collection(db, 'creators', cid, 'series');
@@ -54,6 +56,18 @@ export default function StoryListScreen({ route, navigation }) {
   // 인라인 비디오 재생 모달
   const [videoModal, setVideoModal] = useState(null);
   // { videoUrl, title }
+
+  // ── ElevenLabs TTS 오디오 상태 ───────────────────────────────
+  const [audioUrls,       setAudioUrls]       = useState({}); // { [seriesId]: audioUrl }
+  const [audioGenerating, setAudioGenerating] = useState({}); // { [seriesId]: boolean }
+  const [playingSid,      setPlayingSid]      = useState(null);
+  const [isPlaying,       setIsPlaying]       = useState(false);
+  const soundRef = useRef(null);
+
+  useEffect(() => {
+    Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+    return () => { soundRef.current?.unloadAsync(); };
+  }, []);
 
   useEffect(() => { loadStories(); }, []);
 
@@ -96,10 +110,67 @@ export default function StoryListScreen({ route, navigation }) {
     }
   };
 
+  // Firestore stories/{seriesId}에서 기존 audioUrl 조회
+  const loadAudioUrl = async (seriesId) => {
+    if (audioUrls[seriesId]) return;
+    try {
+      const snap = await getDoc(doc(db, 'stories', seriesId));
+      if (snap.exists() && snap.data().audioUrl) {
+        setAudioUrls((prev) => ({ ...prev, [seriesId]: snap.data().audioUrl }));
+      }
+    } catch (_) {}
+  };
+
   const handleExpand = (seriesId) => {
     const willExpand = expandedId !== seriesId;
     setExpandedId(willExpand ? seriesId : null);
-    if (willExpand) loadEpisodeStatus(seriesId);
+    if (willExpand) {
+      loadEpisodeStatus(seriesId);
+      loadAudioUrl(seriesId);
+    }
+  };
+
+  // ElevenLabs TTS 음성 생성 호출
+  const handleGenerateAudio = async (story) => {
+    const text = story.fullSynopsis ?? '';
+    if (text.length > 1000 || audioGenerating[story.id]) return;
+
+    setAudioGenerating((prev) => ({ ...prev, [story.id]: true }));
+    try {
+      const result = await generateAudioFn({ text, storyId: story.id });
+      setAudioUrls((prev) => ({ ...prev, [story.id]: result.data.audioUrl }));
+    } catch (e) {
+      Alert.alert('음성 생성 실패', (e?.message ?? '알 수 없는 오류').slice(0, 120));
+    } finally {
+      setAudioGenerating((prev) => ({ ...prev, [story.id]: false }));
+    }
+  };
+
+  // 오디오 재생 / 일시정지 토글
+  const handlePlayPause = async (seriesId, audioUrl) => {
+    if (playingSid === seriesId && soundRef.current) {
+      if (isPlaying) {
+        await soundRef.current.pauseAsync();
+        setIsPlaying(false);
+      } else {
+        await soundRef.current.playAsync();
+        setIsPlaying(true);
+      }
+      return;
+    }
+
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+
+    const { sound } = await Audio.Sound.createAsync({ uri: audioUrl }, { shouldPlay: true });
+    sound.setOnPlaybackStatusUpdate((status) => {
+      if (status.didJustFinish) setIsPlaying(false);
+    });
+    soundRef.current = sound;
+    setPlayingSid(seriesId);
+    setIsPlaying(true);
   };
 
   // ── 에피소드별 원클릭 통짜 제작 파이프라인 ─────────────────
@@ -395,7 +466,7 @@ export default function StoryListScreen({ route, navigation }) {
                     </View>
                   ) : null}
 
-                  {/* AI 각색 줄거리 */}
+                  {/* AI 각색 줄거리 + TTS */}
                   {item.fullSynopsis ? (
                     <View style={styles.synopsisSection}>
                       <View style={styles.sectionLabelRow}>
@@ -403,6 +474,61 @@ export default function StoryListScreen({ route, navigation }) {
                         <Text style={styles.sectionLabelText}>AI 각색 전체 줄거리</Text>
                       </View>
                       <Text style={styles.synopsisText}>{item.fullSynopsis}</Text>
+
+                      {/* ── TTS 오디오 섹션 ── */}
+                      {(() => {
+                        const textLen      = (item.fullSynopsis ?? '').length;
+                        const isOverLimit  = textLen > 1000;
+                        const isGenLoading = !!audioGenerating[item.id];
+                        const audioUrl     = audioUrls[item.id];
+                        const isThisPlaying = playingSid === item.id && isPlaying;
+
+                        if (audioUrl) {
+                          return (
+                            <TouchableOpacity
+                              style={styles.audioPlayerBtn}
+                              onPress={() => handlePlayPause(item.id, audioUrl)}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.audioPlayerIcon}>
+                                {isThisPlaying ? '⏸️' : '▶️'}
+                              </Text>
+                              <Text style={styles.audioPlayerText}>
+                                {isThisPlaying ? 'AI 목소리 일시정지' : 'AI 목소리 재생'}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        }
+
+                        if (isGenLoading) {
+                          return (
+                            <View style={styles.audioLoadingBox}>
+                              <ActivityIndicator color="#7C3AED" size="small" />
+                              <Text style={styles.audioLoadingText}>
+                                🎙️ AI 성우가 녹음 중입니다...
+                              </Text>
+                            </View>
+                          );
+                        }
+
+                        return (
+                          <View style={styles.ttsWrap}>
+                            <TouchableOpacity
+                              style={[styles.ttsBtn, isOverLimit && styles.ttsBtnDisabled]}
+                              onPress={() => handleGenerateAudio(item)}
+                              disabled={isOverLimit}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.ttsBtnText}>🎙️ AI 목소리 입히기</Text>
+                            </TouchableOpacity>
+                            {isOverLimit && (
+                              <Text style={styles.overLimitText}>
+                                ⚠️ 글자 수 제한(1,000자)을 초과하여 음성을 생성할 수 없습니다.
+                              </Text>
+                            )}
+                          </View>
+                        );
+                      })()}
                     </View>
                   ) : null}
 
@@ -611,6 +737,31 @@ const styles = StyleSheet.create({
   sectionLabelIcon: { fontSize: 13 },
   sectionLabelText: { fontSize: 12, fontWeight: '800', color: '#4B5563' },
   synopsisText: { fontSize: 13, color: '#374151', lineHeight: 20 },
+
+  // ── TTS 오디오 ──
+  ttsWrap: { marginTop: 12, gap: 6 },
+  ttsBtn: {
+    backgroundColor: '#7C3AED', borderRadius: 12, paddingVertical: 12,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#7C3AED', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  ttsBtnDisabled: { backgroundColor: '#C4B5FD', shadowOpacity: 0, elevation: 0 },
+  ttsBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  overLimitText: { fontSize: 12, color: '#DC2626', textAlign: 'center', lineHeight: 18 },
+  audioLoadingBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12,
+    backgroundColor: '#F5F3FF', borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: '#DDD6FE',
+  },
+  audioLoadingText: { fontSize: 13, color: '#7C3AED', fontWeight: '600' },
+  audioPlayerBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, marginTop: 12, backgroundColor: '#059669',
+    borderRadius: 12, paddingVertical: 12,
+    shadowColor: '#059669', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  audioPlayerIcon: { fontSize: 16 },
+  audioPlayerText: { fontSize: 14, fontWeight: '800', color: '#fff' },
 
   // ── 갈등 포인트 ──
   plotSection: { gap: 4 },

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../services/firebase';
+import { getDynamicLoadingMessage } from '../utils/loadingMessages';
 
 const generateSynopsisFn = httpsCallable(functions, 'generateSynopsis', { timeout: 120000 });
 
@@ -17,6 +18,10 @@ export default function SynopsisScreen({ route, navigation }) {
   const { creator } = route.params;
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+
+  const loadingMsg = getDynamicLoadingMessage(
+    `${creator.name ?? ''} ${creator.persona ?? ''}`
+  );
 
   useEffect(() => {
     startGeneration();
@@ -55,11 +60,9 @@ export default function SynopsisScreen({ route, navigation }) {
         <View style={styles.overlayBg}>
           <View style={styles.overlayCard}>
             <ActivityIndicator size="large" color="#7C3AED" style={{ marginBottom: 16 }} />
-            <Text style={styles.overlayTitle}>🔥 레전드 썰 수집 및{'\n'}10부작 기획 중...</Text>
+            <Text style={styles.overlayTitle}>{loadingMsg.title}</Text>
             <Text style={styles.overlaySubtitle}>예상 대기시간: 약 40초</Text>
-            <Text style={styles.overlayDetail}>
-              AI가 인터넷에서 바이럴 원본을 검색하고{'\n'}전문을 추출하여 시리즈를 기획하고 있습니다
-            </Text>
+            <Text style={styles.overlayDetail}>{loadingMsg.detail}</Text>
             <Text style={styles.overlayHint}>
               완료되면 자동으로 보관함으로 이동합니다
             </Text>

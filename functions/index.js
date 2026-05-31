@@ -8,6 +8,7 @@ const os = require("os");
 const fs = require("fs");
 const { google } = require("googleapis");
 const { YoutubeTranscript } = require("youtube-transcript");
+const axios = require("axios");
 
 // Firebase Admin SDK 초기화 (Firestore 서버 사이드 쓰기용)
 admin.initializeApp();
@@ -1032,5 +1033,96 @@ exports.deleteCreatorData = onCall(
       if (error instanceof HttpsError) throw error;
       throw new HttpsError("internal", `삭제 실패: ${error.message}`);
     }
+  }
+);
+
+// ────────────────────────────────────────────────────────────
+// ElevenLabs TTS 음성 생성 엔진
+// 대본 텍스트 → ElevenLabs API → Firebase Storage → Firestore audioUrl 저장
+// 비용 방어선: 1,000자 초과 시 즉시 차단
+// ────────────────────────────────────────────────────────────
+const ELEVENLABS_DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel (eleven_multilingual_v2 최적화)
+const ELEVENLABS_CHAR_LIMIT = 1000;
+
+exports.generateAudio = onCall(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const { text, voiceId, storyId } = request.data;
+
+    if (!text || !storyId) {
+      throw new HttpsError("invalid-argument", "text와 storyId는 필수입니다.");
+    }
+
+    // ── 비용 방어선: 1,000자 초과 즉시 차단 ─────────────────────
+    if (text.length > ELEVENLABS_CHAR_LIMIT) {
+      throw new HttpsError(
+        "invalid-argument",
+        `글자 수 제한 초과: 비용 방어선 작동 (${text.length}자 / 최대 ${ELEVENLABS_CHAR_LIMIT}자)`
+      );
+    }
+
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) {
+      throw new HttpsError("internal", "ELEVENLABS_API_KEY가 설정되지 않았습니다.");
+    }
+
+    const selectedVoiceId = voiceId || ELEVENLABS_DEFAULT_VOICE_ID;
+    console.log(`[generateAudio] storyId: ${storyId}, 글자수: ${text.length}, voiceId: ${selectedVoiceId}`);
+
+    // ── ElevenLabs TTS API 호출 ───────────────────────────────
+    let audioBuffer;
+    try {
+      const response = await axios.post(
+        `https://api.elevenlabs.io/v1/text-to-speech/${selectedVoiceId}`,
+        {
+          text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+          },
+        },
+        {
+          headers: {
+            "xi-api-key": apiKey,
+            "Content-Type": "application/json",
+            Accept: "audio/mpeg",
+          },
+          responseType: "arraybuffer",
+          timeout: 60000,
+        }
+      );
+
+      audioBuffer = Buffer.from(response.data);
+      console.log(`[generateAudio] ElevenLabs 응답 완료, 크기: ${audioBuffer.length} bytes`);
+    } catch (axiosErr) {
+      const status = axiosErr.response?.status;
+      const errMsg = axiosErr.response?.data
+        ? Buffer.from(axiosErr.response.data).toString("utf8").slice(0, 200)
+        : axiosErr.message;
+      console.error("[generateAudio] ElevenLabs API 오류:", status, errMsg);
+      throw new HttpsError("internal", `ElevenLabs TTS 실패 (${status ?? "네트워크 오류"}): ${errMsg}`);
+    }
+
+    // ── Firebase Storage 업로드 ───────────────────────────────
+    const storagePath = `stories/${storyId}/audio.mp3`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(storagePath);
+
+    await file.save(audioBuffer, { contentType: "audio/mpeg" });
+    const [audioUrl] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
+    });
+    console.log("[generateAudio] Storage 업로드 완료:", storagePath);
+
+    // ── Firestore audioUrl 업데이트 ───────────────────────────
+    await adminDb.collection("stories").doc(storyId).set(
+      { audioUrl, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+    console.log("[generateAudio] Firestore 업데이트 완료:", storyId);
+
+    return { audioUrl };
   }
 );

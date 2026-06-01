@@ -1247,3 +1247,85 @@ exports.generateGoogleAudio = onCall(
     return { audioUrl };
   }
 );
+
+// ────────────────────────────────────────────────────────────
+// DALL-E 3 에피소드 컷 이미지 자동 생성
+// text(프롬프트) → OpenAI DALL-E 3 → Storage image.png → Firestore imageUrl
+// ────────────────────────────────────────────────────────────
+exports.generateEpisodeImage = onCall(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const { text, storyId, episodeId } = request.data;
+
+    if (!text || !storyId || !episodeId) {
+      throw new HttpsError("invalid-argument", "text, storyId, episodeId는 필수입니다.");
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new HttpsError("internal", "OPENAI_API_KEY가 설정되지 않았습니다.");
+    }
+
+    console.log(`[generateEpisodeImage] storyId: ${storyId}, episodeId: ${episodeId}`);
+
+    // ── DALL-E 3 이미지 생성 ──────────────────────────────────
+    let imageBuffer;
+    try {
+      const response = await axios.post(
+        "https://api.openai.com/v1/images/generations",
+        {
+          model: "dall-e-3",
+          prompt: text,
+          n: 1,
+          size: "1024x1024",
+          response_format: "b64_json",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 90000,
+        }
+      );
+
+      const b64 = response.data?.data?.[0]?.b64_json;
+      if (!b64) {
+        throw new HttpsError("internal", "DALL-E 3 응답에 이미지 데이터가 없습니다.");
+      }
+
+      imageBuffer = Buffer.from(b64, "base64");
+      console.log(`[generateEpisodeImage] 이미지 생성 완료, 크기: ${imageBuffer.length} bytes`);
+    } catch (axiosErr) {
+      if (axiosErr instanceof HttpsError) throw axiosErr;
+      const status = axiosErr.response?.status;
+      const errMsg = axiosErr.response?.data?.error?.message ?? axiosErr.message ?? "알 수 없는 오류";
+      console.error("[generateEpisodeImage] DALL-E 3 API 오류:", status, errMsg);
+      throw new HttpsError("internal", `DALL-E 3 이미지 생성 실패 (${status ?? "네트워크 오류"}): ${errMsg}`);
+    }
+
+    // ── Firebase Storage 업로드 ───────────────────────────────
+    const storagePath = `stories/${storyId}/episodes/${episodeId}/image.png`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(storagePath);
+
+    await file.save(imageBuffer, { contentType: "image/png" });
+    const [imageUrl] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 100 * 365 * 24 * 60 * 60 * 1000, // 100년
+    });
+    console.log("[generateEpisodeImage] Storage 업로드 완료:", storagePath);
+
+    // ── Firestore imageUrl 업데이트 ───────────────────────────
+    await adminDb
+      .collection("stories").doc(storyId)
+      .collection("episodes").doc(episodeId)
+      .set(
+        { imageUrl, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    console.log("[generateEpisodeImage] Firestore 업데이트 완료:", storyId, episodeId);
+
+    return { imageUrl };
+  }
+);

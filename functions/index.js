@@ -1240,10 +1240,7 @@ exports.generateEpisodeImage = onCall(
           response_format: "b64_json",
         },
         {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
+          headers: { Authorization: `Bearer ${apiKey}` },
           timeout: 90000,
         }
       );

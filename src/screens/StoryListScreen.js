@@ -73,6 +73,10 @@ export default function StoryListScreen({ route, navigation }) {
   const [epImageUrls,    setEpImageUrls]    = useState({});
   const [epImageLoading, setEpImageLoading] = useState({});
 
+  // ── 에피소드 레벨 FFmpeg 비디오 상태 ────────────────────────────
+  const [epVideoUrls,    setEpVideoUrls]    = useState({});
+  const [epVideoLoading, setEpVideoLoading] = useState({});
+
   // ── 공통 오디오 플레이어 상태 ────────────────────────────────────
   const [playingSid, setPlayingSid] = useState(null);
   const [isPlaying,  setIsPlaying]  = useState(false);
@@ -165,6 +169,21 @@ export default function StoryListScreen({ route, navigation }) {
     }
   };
 
+  // Firestore stories/{seriesId}/episodes/ep_{epNum} 에서 기존 videoUrl 일괄 조회
+  const loadEpisodeVideoUrls = async (seriesId, episodes) => {
+    if (!episodes?.length) return;
+    for (const ep of episodes) {
+      const key = `${seriesId}_${ep.number}`;
+      if (epVideoUrls[key]) continue;
+      try {
+        const snap = await getDoc(doc(db, 'stories', seriesId, 'episodes', `ep_${ep.number}`));
+        if (snap.exists() && snap.data().videoUrl) {
+          setEpVideoUrls((prev) => ({ ...prev, [key]: snap.data().videoUrl }));
+        }
+      } catch (_) {}
+    }
+  };
+
   const handleExpand = (seriesId) => {
     const willExpand = expandedId !== seriesId;
     setExpandedId(willExpand ? seriesId : null);
@@ -175,6 +194,7 @@ export default function StoryListScreen({ route, navigation }) {
       if (story?.episodes?.length) {
         loadEpisodeAudioUrls(seriesId, story.episodes);
         loadEpisodeImageUrls(seriesId, story.episodes);
+        loadEpisodeVideoUrls(seriesId, story.episodes);
       }
     }
   };
@@ -227,6 +247,28 @@ export default function StoryListScreen({ route, navigation }) {
       );
     } finally {
       setEpImageLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  // 에피소드 FFmpeg 숏폼 영상 합성 호출
+  const handleGenerateEpisodeVideo = async (story, ep) => {
+    const storyId   = story.id;
+    const episodeId = `ep_${ep.number}`;
+    const key       = `${storyId}_${ep.number}`;
+
+    if (epVideoLoading[key]) return;
+
+    setEpVideoLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const result = await generateFinalVideoFn({ storyId, episodeId });
+      setEpVideoUrls((prev) => ({ ...prev, [key]: result.data.videoUrl }));
+    } catch (e) {
+      Alert.alert(
+        '영상 합성 실패',
+        (e?.message ?? '알 수 없는 오류가 발생했습니다.').slice(0, 160)
+      );
+    } finally {
+      setEpVideoLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -759,6 +801,46 @@ export default function StoryListScreen({ route, navigation }) {
                               );
                             })()}
 
+                            {/* ── 에피소드 FFmpeg 비디오 섹션 ── */}
+                            {(() => {
+                              const key          = `${item.id}_${ep.number}`;
+                              const epVideoUrl   = epVideoUrls[key];
+                              const isVidLoading = !!epVideoLoading[key];
+
+                              if (epVideoUrl) {
+                                return (
+                                  <View style={styles.epVideoWrap}>
+                                    <Video
+                                      source={{ uri: epVideoUrl }}
+                                      style={styles.epVideo}
+                                      useNativeControls
+                                      resizeMode={ResizeMode.CONTAIN}
+                                      isLooping
+                                    />
+                                  </View>
+                                );
+                              }
+                              if (isVidLoading) {
+                                return (
+                                  <View style={styles.videoLoadingBox}>
+                                    <ActivityIndicator color="#059669" size="small" />
+                                    <Text style={styles.videoLoadingText}>
+                                      🚀 FFMPEG 인코딩 중... 잠시만 기다려주세요
+                                    </Text>
+                                  </View>
+                                );
+                              }
+                              return (
+                                <TouchableOpacity
+                                  style={styles.videoGenBtn}
+                                  onPress={() => handleGenerateEpisodeVideo(item, ep)}
+                                  activeOpacity={0.85}
+                                >
+                                  <Text style={styles.videoGenBtnText}>🚀 숏폼 자동 제작</Text>
+                                </TouchableOpacity>
+                              );
+                            })()}
+
                             {hasVideo ? (
                               /* ── 완성된 영상 있음 ── */
                               <View style={styles.doneButtonRow}>
@@ -949,6 +1031,26 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
   epImage: { width: '100%', aspectRatio: 1 },
+
+  // ── FFmpeg 비디오 ──
+  videoGenBtn: {
+    backgroundColor: '#059669', borderRadius: 12, paddingVertical: 12,
+    alignItems: 'center', justifyContent: 'center', marginTop: 8,
+    shadowColor: '#059669', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  videoGenBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  videoLoadingBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8,
+    backgroundColor: '#ECFDF5', borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: '#6EE7B7',
+  },
+  videoLoadingText: { fontSize: 13, color: '#059669', fontWeight: '600', flexShrink: 1 },
+  epVideoWrap: {
+    marginTop: 10, borderRadius: 12, overflow: 'hidden',
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
+    backgroundColor: '#000',
+  },
+  epVideo: { width: '100%', aspectRatio: 9 / 16 },
   audioPlayerBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, marginTop: 12, backgroundColor: '#059669',

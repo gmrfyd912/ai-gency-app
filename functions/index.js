@@ -747,52 +747,33 @@ exports.generateSceneImage = onCall(
 );
 
 // ────────────────────────────────────────────────────────────
-// FFmpeg 기반 클라우드 비디오 렌더링 파이프라인
+// FFmpeg 기반 에피소드 숏폼 영상 합성 파이프라인 (1컷 + 1음성)
+// Storage: stories/{storyId}/episodes/{episodeId}/image.png + audio.mp3
+//       → video.mp4 업로드 후 Firestore videoUrl 저장
 // ────────────────────────────────────────────────────────────
 exports.generateFinalVideo = onCall(
-  { timeoutSeconds: 540, memory: "2GiB" },
+  { timeoutSeconds: 300, memory: "1GiB" },
   async (request) => {
-    const { creatorId, seriesId, episodeId } = request.data;
+    const { storyId, episodeId } = request.data;
 
-    if (!creatorId || !seriesId || !episodeId) {
-      throw new HttpsError("invalid-argument", "creatorId, seriesId, episodeId는 필수입니다.");
+    if (!storyId || !episodeId) {
+      throw new HttpsError("invalid-argument", "storyId, episodeId는 필수입니다.");
     }
 
-    // ── Firestore 에피소드 조회 ──────────────────────────────
-    const episodeRef = adminDb
-      .collection("creators").doc(creatorId)
-      .collection("series").doc(seriesId)
-      .collection("episodes").doc(episodeId);
-    const episodeSnap = await episodeRef.get();
-
-    if (!episodeSnap.exists) {
-      throw new HttpsError("not-found", "에피소드를 찾을 수 없습니다.");
-    }
-
-    const episode = episodeSnap.data();
-    const scenes = episode.scenes ?? [];
-
-    // ── 씬 데이터 검증 ────────────────────────────────────────
-    const incompleteScenes = scenes
-      .map((s, i) => ({ i: i + 1, hasImg: !!s.imageUri, hasAudio: !!s.audioUri }))
-      .filter((s) => !s.hasImg || !s.hasAudio);
-
-    if (incompleteScenes.length > 0) {
-      const detail = incompleteScenes
-        .map((s) => `씬${s.i}(${!s.hasImg ? "이미지 " : ""}${!s.hasAudio ? "오디오" : ""} 없음)`)
-        .join(", ");
-      throw new HttpsError("failed-precondition", `합성 불가 — ${detail}`);
-    }
-
+    const bucket   = admin.storage().bucket();
+    const tmpDir   = os.tmpdir();
     const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const tmpDir = os.tmpdir();
-    const tmpFiles = [];
+
+    const imgPath   = path.join(tmpDir, `img_${sessionId}.png`);
+    const audioPath = path.join(tmpDir, `audio_${sessionId}.mp3`);
+    const videoPath = path.join(tmpDir, `video_${sessionId}.mp4`);
+    const tmpFiles  = [imgPath, audioPath, videoPath];
 
     // FFmpeg 명령 실행 헬퍼
     const runFfmpeg = (cmd) =>
       new Promise((resolve, reject) => {
         cmd
-          .on("start", (c) => console.log("[FFmpeg]", c.slice(0, 120)))
+          .on("start", (c) => console.log("[FFmpeg]", c.slice(0, 150)))
           .on("end", resolve)
           .on("error", (err, _stdout, stderr) => {
             console.error("[FFmpeg stderr]", (stderr || "").slice(0, 400));
@@ -802,79 +783,57 @@ exports.generateFinalVideo = onCall(
       });
 
     try {
-      // ── 각 씬: Storage URL에서 파일 다운로드 + 개별 클립 생성 ─
-      const clipPaths = [];
-      for (let i = 0; i < scenes.length; i++) {
-        const scene = scenes[i];
+      // ── Storage에서 image.png / audio.mp3 다운로드 ───────────
+      const basePath = `stories/${storyId}/episodes/${episodeId}`;
+      console.log(`[generateFinalVideo] 다운로드 시작: ${basePath}`);
 
-        const imgPath   = path.join(tmpDir, `img_${sessionId}_${i}.jpg`);
-        const audioPath = path.join(tmpDir, `audio_${sessionId}_${i}.mp3`);
-        const clipPath  = path.join(tmpDir, `clip_${sessionId}_${i}.mp4`);
-        tmpFiles.push(imgPath, audioPath, clipPath);
+      const [imgDownload, audioDownload] = await Promise.all([
+        bucket.file(`${basePath}/image.png`).download(),
+        bucket.file(`${basePath}/audio.mp3`).download(),
+      ]);
 
-        // Storage URL(signed URL 또는 공개 URL)에서 직접 다운로드
-        const [imgRes, audioRes] = await Promise.all([
-          fetch(scene.imageUri),
-          fetch(scene.audioUri),
-        ]);
-        if (!imgRes.ok)   throw new Error(`이미지 다운로드 실패 (씬 ${i + 1}): HTTP ${imgRes.status}`);
-        if (!audioRes.ok) throw new Error(`오디오 다운로드 실패 (씬 ${i + 1}): HTTP ${audioRes.status}`);
+      fs.writeFileSync(imgPath,   imgDownload[0]);
+      fs.writeFileSync(audioPath, audioDownload[0]);
+      console.log("[generateFinalVideo] 파일 다운로드 완료");
 
-        fs.writeFileSync(imgPath,   Buffer.from(await imgRes.arrayBuffer()));
-        fs.writeFileSync(audioPath, Buffer.from(await audioRes.arrayBuffer()));
-
-        await runFfmpeg(
-          ffmpeg()
-            .input(imgPath).inputOptions(["-loop 1"])
-            .input(audioPath)
-            .videoCodec("libx264")
-            .outputOptions([
-              "-tune stillimage",
-              "-pix_fmt yuv420p",
-              "-shortest",
-              "-movflags +faststart",
-            ])
-            .audioCodec("aac").audioBitrate("128k")
-            .output(clipPath)
-        );
-        clipPaths.push(clipPath);
-        console.log(`[generateFinalVideo] 클립 ${i + 1}/${scenes.length} 완료`);
-      }
-
-      // ── concat 목록 파일 작성 ─────────────────────────────
-      const listPath  = path.join(tmpDir, `list_${sessionId}.txt`);
-      const finalPath = path.join(tmpDir, `final_${sessionId}.mp4`);
-      tmpFiles.push(listPath, finalPath);
-
-      fs.writeFileSync(listPath, clipPaths.map((p) => `file '${p}'`).join("\n"));
-
-      // ── 개별 클립 → 최종 영상 병합 ───────────────────────
+      // ── FFmpeg: 이미지 + 오디오 → MP4 합성 ──────────────────
       await runFfmpeg(
         ffmpeg()
-          .input(listPath).inputOptions(["-f concat", "-safe 0"])
-          .outputOptions(["-c copy"])
-          .output(finalPath)
+          .input(imgPath).inputOptions(["-loop 1"])
+          .input(audioPath)
+          .videoCodec("libx264")
+          .audioCodec("aac").audioBitrate("128k")
+          .outputOptions([
+            "-pix_fmt yuv420p",
+            "-shortest",
+            "-movflags +faststart",
+          ])
+          .output(videoPath)
       );
-      console.log("[generateFinalVideo] 최종 병합 완료");
+      console.log("[generateFinalVideo] FFmpeg 합성 완료");
 
       // ── Firebase Storage 업로드 ───────────────────────────
-      const storagePath = `creators/${creatorId}/series/${seriesId}/episodes/${episodeId}/final.mp4`;
-      const bucket = admin.storage().bucket();
-
-      await bucket.upload(finalPath, {
-        destination: storagePath,
+      const destPath = `${basePath}/video.mp4`;
+      await bucket.upload(videoPath, {
+        destination: destPath,
         metadata: { contentType: "video/mp4" },
       });
 
-      // 서명된 다운로드 URL 발급 (1년)
-      const [videoUrl] = await bucket.file(storagePath).getSignedUrl({
+      const [videoUrl] = await bucket.file(destPath).getSignedUrl({
         action: "read",
-        expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        expires: Date.now() + 100 * 365 * 24 * 60 * 60 * 1000, // 100년
       });
-      console.log("[generateFinalVideo] Storage 업로드 완료");
+      console.log("[generateFinalVideo] Storage 업로드 완료:", destPath);
 
-      // ── Firestore 업데이트 ───────────────────────────────
-      await episodeRef.update({ videoUrl });
+      // ── Firestore videoUrl 업데이트 ───────────────────────
+      await adminDb
+        .collection("stories").doc(storyId)
+        .collection("episodes").doc(episodeId)
+        .set(
+          { videoUrl, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      console.log("[generateFinalVideo] Firestore 업데이트 완료");
 
       return { videoUrl };
     } finally {

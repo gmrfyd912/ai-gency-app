@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Linking,
   Modal,
   ScrollView,
@@ -33,6 +34,7 @@ const generateSceneAudioFn         = httpsCallable(functions, 'generateSceneAudi
 const generateFinalVideoFn         = httpsCallable(functions, 'generateFinalVideo',          { timeout: 540000 });
 const generateAudioFn              = httpsCallable(functions, 'generateAudio',               { timeout: 120000 });
 const generateGoogleAudioFn        = httpsCallable(functions, 'generateGoogleAudio',          { timeout: 120000 });
+const generateEpisodeImageFn       = httpsCallable(functions, 'generateEpisodeImage',         { timeout: 120000 });
 
 // ── Firestore 경로 헬퍼 ─────────────────────────────────────
 const seriesCol     = (cid)           => collection(db, 'creators', cid, 'series');
@@ -66,6 +68,10 @@ export default function StoryListScreen({ route, navigation }) {
   // key 형식: `${seriesId}_${ep.number}`
   const [epAudioUrls,    setEpAudioUrls]    = useState({});
   const [epAudioLoading, setEpAudioLoading] = useState({});
+
+  // ── 에피소드 레벨 DALL-E 3 이미지 상태 ──────────────────────────
+  const [epImageUrls,    setEpImageUrls]    = useState({});
+  const [epImageLoading, setEpImageLoading] = useState({});
 
   // ── 공통 오디오 플레이어 상태 ────────────────────────────────────
   const [playingSid, setPlayingSid] = useState(null);
@@ -144,6 +150,21 @@ export default function StoryListScreen({ route, navigation }) {
     }
   };
 
+  // Firestore stories/{seriesId}/episodes/ep_{epNum} 에서 기존 imageUrl 일괄 조회
+  const loadEpisodeImageUrls = async (seriesId, episodes) => {
+    if (!episodes?.length) return;
+    for (const ep of episodes) {
+      const key = `${seriesId}_${ep.number}`;
+      if (epImageUrls[key]) continue;
+      try {
+        const snap = await getDoc(doc(db, 'stories', seriesId, 'episodes', `ep_${ep.number}`));
+        if (snap.exists() && snap.data().imageUrl) {
+          setEpImageUrls((prev) => ({ ...prev, [key]: snap.data().imageUrl }));
+        }
+      } catch (_) {}
+    }
+  };
+
   const handleExpand = (seriesId) => {
     const willExpand = expandedId !== seriesId;
     setExpandedId(willExpand ? seriesId : null);
@@ -151,7 +172,10 @@ export default function StoryListScreen({ route, navigation }) {
       loadEpisodeStatus(seriesId);
       loadAudioUrl(seriesId);
       const story = stories.find((s) => s.id === seriesId);
-      if (story?.episodes?.length) loadEpisodeAudioUrls(seriesId, story.episodes);
+      if (story?.episodes?.length) {
+        loadEpisodeAudioUrls(seriesId, story.episodes);
+        loadEpisodeImageUrls(seriesId, story.episodes);
+      }
     }
   };
 
@@ -180,6 +204,29 @@ export default function StoryListScreen({ route, navigation }) {
       );
     } finally {
       setEpAudioLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  // 에피소드 DALL-E 3 이미지 생성 호출
+  const handleGenerateEpisodeImage = async (story, ep) => {
+    const text = ep.summary ?? '';
+    const storyId = story.id;
+    const episodeId = `ep_${ep.number}`;
+    const key = `${storyId}_${ep.number}`;
+
+    if (!text || epImageLoading[key]) return;
+
+    setEpImageLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const result = await generateEpisodeImageFn({ text, storyId, episodeId });
+      setEpImageUrls((prev) => ({ ...prev, [key]: result.data.imageUrl }));
+    } catch (e) {
+      Alert.alert(
+        '이미지 생성 실패',
+        (e?.message ?? '알 수 없는 오류가 발생했습니다.').slice(0, 160)
+      );
+    } finally {
+      setEpImageLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -674,6 +721,44 @@ export default function StoryListScreen({ route, navigation }) {
                               );
                             })()}
 
+                            {/* ── 에피소드 DALL-E 3 이미지 섹션 ── */}
+                            {(() => {
+                              const key          = `${item.id}_${ep.number}`;
+                              const epImageUrl   = epImageUrls[key];
+                              const isImgLoading = !!epImageLoading[key];
+
+                              if (epImageUrl) {
+                                return (
+                                  <View style={styles.epImageWrap}>
+                                    <Image
+                                      source={{ uri: epImageUrl }}
+                                      style={styles.epImage}
+                                      resizeMode="cover"
+                                    />
+                                  </View>
+                                );
+                              }
+                              if (isImgLoading) {
+                                return (
+                                  <View style={styles.audioLoadingBox}>
+                                    <ActivityIndicator color="#4F46E5" size="small" />
+                                    <Text style={[styles.audioLoadingText, { color: '#4F46E5' }]}>
+                                      🎨 AI가 연출 컷을 그리고 있습니다...
+                                    </Text>
+                                  </View>
+                                );
+                              }
+                              return (
+                                <TouchableOpacity
+                                  style={styles.imageGenBtn}
+                                  onPress={() => handleGenerateEpisodeImage(item, ep)}
+                                  activeOpacity={0.85}
+                                >
+                                  <Text style={styles.imageGenBtnText}>🎨 AI 연출 컷 생성</Text>
+                                </TouchableOpacity>
+                              );
+                            })()}
+
                             {hasVideo ? (
                               /* ── 완성된 영상 있음 ── */
                               <View style={styles.doneButtonRow}>
@@ -846,11 +931,24 @@ const styles = StyleSheet.create({
   ttsBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
   overLimitText: { fontSize: 12, color: '#DC2626', textAlign: 'center', lineHeight: 18 },
   audioLoadingBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8,
     backgroundColor: '#F5F3FF', borderRadius: 12, padding: 12,
     borderWidth: 1, borderColor: '#DDD6FE',
   },
   audioLoadingText: { fontSize: 13, color: '#7C3AED', fontWeight: '600' },
+
+  // ── DALL-E 3 이미지 ──
+  imageGenBtn: {
+    backgroundColor: '#4F46E5', borderRadius: 12, paddingVertical: 12,
+    alignItems: 'center', justifyContent: 'center', marginTop: 8,
+    shadowColor: '#4F46E5', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  imageGenBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  epImageWrap: {
+    marginTop: 10, borderRadius: 12, overflow: 'hidden',
+    shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
+  },
+  epImage: { width: '100%', aspectRatio: 1 },
   audioPlayerBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, marginTop: 12, backgroundColor: '#059669',

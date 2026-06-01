@@ -32,6 +32,7 @@ const generateSceneImageFn         = httpsCallable(functions, 'generateSceneImag
 const generateSceneAudioFn         = httpsCallable(functions, 'generateSceneAudio',          { timeout: 60000  });
 const generateFinalVideoFn         = httpsCallable(functions, 'generateFinalVideo',          { timeout: 540000 });
 const generateAudioFn              = httpsCallable(functions, 'generateAudio',               { timeout: 120000 });
+const generateGoogleAudioFn        = httpsCallable(functions, 'generateGoogleAudio',          { timeout: 120000 });
 
 // ── Firestore 경로 헬퍼 ─────────────────────────────────────
 const seriesCol     = (cid)           => collection(db, 'creators', cid, 'series');
@@ -57,11 +58,18 @@ export default function StoryListScreen({ route, navigation }) {
   const [videoModal, setVideoModal] = useState(null);
   // { videoUrl, title }
 
-  // ── ElevenLabs TTS 오디오 상태 ───────────────────────────────
+  // ── 시놉시스 레벨 TTS 오디오 상태 ──────────────────────────────
   const [audioUrls,       setAudioUrls]       = useState({}); // { [seriesId]: audioUrl }
   const [audioGenerating, setAudioGenerating] = useState({}); // { [seriesId]: boolean }
-  const [playingSid,      setPlayingSid]      = useState(null);
-  const [isPlaying,       setIsPlaying]       = useState(false);
+
+  // ── 에피소드 레벨 Google TTS 오디오 상태 ───────────────────────
+  // key 형식: `${seriesId}_${ep.number}`
+  const [epAudioUrls,    setEpAudioUrls]    = useState({});
+  const [epAudioLoading, setEpAudioLoading] = useState({});
+
+  // ── 공통 오디오 플레이어 상태 ────────────────────────────────────
+  const [playingSid, setPlayingSid] = useState(null);
+  const [isPlaying,  setIsPlaying]  = useState(false);
   const soundRef = useRef(null);
 
   useEffect(() => {
@@ -121,12 +129,57 @@ export default function StoryListScreen({ route, navigation }) {
     } catch (_) {}
   };
 
+  // Firestore stories/{seriesId}/episodes/ep_{epNum} 에서 기존 audioUrl 일괄 조회
+  const loadEpisodeAudioUrls = async (seriesId, episodes) => {
+    if (!episodes?.length) return;
+    for (const ep of episodes) {
+      const key = `${seriesId}_${ep.number}`;
+      if (epAudioUrls[key]) continue;
+      try {
+        const snap = await getDoc(doc(db, 'stories', seriesId, 'episodes', `ep_${ep.number}`));
+        if (snap.exists() && snap.data().audioUrl) {
+          setEpAudioUrls((prev) => ({ ...prev, [key]: snap.data().audioUrl }));
+        }
+      } catch (_) {}
+    }
+  };
+
   const handleExpand = (seriesId) => {
     const willExpand = expandedId !== seriesId;
     setExpandedId(willExpand ? seriesId : null);
     if (willExpand) {
       loadEpisodeStatus(seriesId);
       loadAudioUrl(seriesId);
+      const story = stories.find((s) => s.id === seriesId);
+      if (story?.episodes?.length) loadEpisodeAudioUrls(seriesId, story.episodes);
+    }
+  };
+
+  // 에피소드 Google TTS 음성 생성 호출
+  const handleGenerateEpisodeAudio = async (story, ep) => {
+    const text = ep.summary ?? '';
+    const storyId = story.id;
+    const episodeId = `ep_${ep.number}`;
+    const key = `${storyId}_${ep.number}`;
+
+    if (text.length > 1000 || epAudioLoading[key]) return;
+
+    setEpAudioLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const result = await generateGoogleAudioFn({
+        text,
+        storyId,
+        episodeId,
+        gender: 'FEMALE',
+      });
+      setEpAudioUrls((prev) => ({ ...prev, [key]: result.data.audioUrl }));
+    } catch (e) {
+      Alert.alert(
+        '음성 생성 실패',
+        (e?.message ?? '알 수 없는 오류가 발생했습니다.').slice(0, 160)
+      );
+    } finally {
+      setEpAudioLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -576,6 +629,50 @@ export default function StoryListScreen({ route, navigation }) {
                             </View>
 
                             <Text style={styles.epSummary}>{ep.summary}</Text>
+
+                            {/* ── 에피소드 Google TTS 오디오 섹션 ── */}
+                            {(() => {
+                              const key           = `${item.id}_${ep.number}`;
+                              const epAudioUrl    = epAudioUrls[key];
+                              const isEpLoading   = !!epAudioLoading[key];
+                              const isThisPlaying = playingSid === key && isPlaying;
+
+                              if (epAudioUrl) {
+                                return (
+                                  <TouchableOpacity
+                                    style={styles.audioPlayerBtn}
+                                    onPress={() => handlePlayPause(key, epAudioUrl)}
+                                    activeOpacity={0.85}
+                                  >
+                                    <Text style={styles.audioPlayerIcon}>
+                                      {isThisPlaying ? '⏸️' : '▶️'}
+                                    </Text>
+                                    <Text style={styles.audioPlayerText}>
+                                      {isThisPlaying ? 'AI 목소리 일시정지' : 'AI 목소리 재생'}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              }
+                              if (isEpLoading) {
+                                return (
+                                  <View style={styles.audioLoadingBox}>
+                                    <ActivityIndicator color="#7C3AED" size="small" />
+                                    <Text style={styles.audioLoadingText}>
+                                      🎙️ AI 성우 녹음 중입니다...
+                                    </Text>
+                                  </View>
+                                );
+                              }
+                              return (
+                                <TouchableOpacity
+                                  style={styles.ttsBtn}
+                                  onPress={() => handleGenerateEpisodeAudio(item, ep)}
+                                  activeOpacity={0.85}
+                                >
+                                  <Text style={styles.ttsBtnText}>🎙️ AI 목소리 입히기</Text>
+                                </TouchableOpacity>
+                              );
+                            })()}
 
                             {hasVideo ? (
                               /* ── 완성된 영상 있음 ── */

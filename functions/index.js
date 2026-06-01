@@ -1230,14 +1230,13 @@ exports.generateEpisodeImage = onCall(
     // ── DALL-E 3 이미지 생성 ──────────────────────────────────
     let imageBuffer;
     try {
-      const response = await axios.post(
+      const genResponse = await axios.post(
         "https://api.openai.com/v1/images/generations",
         {
           model: "dall-e-3",
           prompt: text,
           n: 1,
           size: "1024x1024",
-          response_format: "b64_json",
         },
         {
           headers: { Authorization: `Bearer ${apiKey}` },
@@ -1245,13 +1244,15 @@ exports.generateEpisodeImage = onCall(
         }
       );
 
-      const b64 = response.data?.data?.[0]?.b64_json;
-      if (!b64) {
-        throw new HttpsError("internal", "DALL-E 3 응답에 이미지 데이터가 없습니다.");
+      const imageUrl = genResponse.data?.data?.[0]?.url;
+      if (!imageUrl) {
+        throw new HttpsError("internal", "DALL-E 3 응답에 이미지 URL이 없습니다.");
       }
+      console.log("[generateEpisodeImage] 이미지 URL 수신 완료, 다운로드 시작");
 
-      imageBuffer = Buffer.from(b64, "base64");
-      console.log(`[generateEpisodeImage] 이미지 생성 완료, 크기: ${imageBuffer.length} bytes`);
+      const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 60000 });
+      imageBuffer = Buffer.from(imgRes.data);
+      console.log(`[generateEpisodeImage] 이미지 다운로드 완료, 크기: ${imageBuffer.length} bytes`);
     } catch (axiosErr) {
       if (axiosErr instanceof HttpsError) throw axiosErr;
       const status = axiosErr.response?.status;

@@ -1087,6 +1087,7 @@ exports.generateAudio = onCall(
             "xi-api-key": apiKey,
             "Content-Type": "application/json",
             Accept: "audio/mpeg",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           },
           responseType: "arraybuffer",
           timeout: 60000,
@@ -1097,11 +1098,31 @@ exports.generateAudio = onCall(
       console.log(`[generateAudio] ElevenLabs 응답 완료, 크기: ${audioBuffer.length} bytes`);
     } catch (axiosErr) {
       const status = axiosErr.response?.status;
-      const errMsg = axiosErr.response?.data
-        ? Buffer.from(axiosErr.response.data).toString("utf8").slice(0, 200)
-        : axiosErr.message;
-      console.error("[generateAudio] ElevenLabs API 오류:", status, errMsg);
-      throw new HttpsError("internal", `ElevenLabs TTS 실패 (${status ?? "네트워크 오류"}): ${errMsg}`);
+
+      // 에러 바디 파싱 (arraybuffer → JSON 시도)
+      let errDetail = null;
+      if (axiosErr.response?.data) {
+        try {
+          const raw = Buffer.from(axiosErr.response.data).toString("utf8");
+          const parsed = JSON.parse(raw);
+          errDetail = parsed?.detail ?? null;
+        } catch (_) {}
+      }
+
+      console.error("[generateAudio] ElevenLabs API 오류:", status, errDetail ?? axiosErr.message);
+
+      // 401 또는 detected_unusual_activity → 정제된 한국어 에러
+      const isUnusual = errDetail?.status === "detected_unusual_activity";
+      if (status === 401 || isUnusual) {
+        throw new HttpsError(
+          "permission-denied",
+          "서버 설정 또는 요금제 제한으로 인해 AI 성우 엔진을 호출할 수 없습니다. 관리자에게 문의하세요."
+        );
+      }
+
+      // 그 외 에러
+      const fallbackMsg = errDetail?.message ?? axiosErr.message ?? "알 수 없는 오류";
+      throw new HttpsError("internal", `ElevenLabs TTS 실패 (${status ?? "네트워크 오류"}): ${fallbackMsg}`);
     }
 
     // ── Firebase Storage 업로드 ───────────────────────────────
@@ -1122,6 +1143,106 @@ exports.generateAudio = onCall(
       { merge: true }
     );
     console.log("[generateAudio] Firestore 업데이트 완료:", storyId);
+
+    return { audioUrl };
+  }
+);
+
+// ────────────────────────────────────────────────────────────
+// Google Cloud TTS 음성 생성 엔진
+// text → Google TTS Neural2 (한국어) → Storage → Firestore audioUrl
+// 비용 방어선: 1,000자 초과 즉시 차단
+// ────────────────────────────────────────────────────────────
+const GOOGLE_TTS_CHAR_LIMIT = 1000;
+const GOOGLE_TTS_VOICES = {
+  MALE:   "ko-KR-Neural2-C",
+  FEMALE: "ko-KR-Neural2-A",
+};
+
+exports.generateGoogleAudio = onCall(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const { text, storyId, episodeId, gender } = request.data;
+
+    if (!text || !storyId || !episodeId) {
+      throw new HttpsError("invalid-argument", "text, storyId, episodeId는 필수입니다.");
+    }
+
+    // ── 비용 방어선: 1,000자 초과 즉시 차단 ─────────────────────
+    if (text.length > GOOGLE_TTS_CHAR_LIMIT) {
+      throw new HttpsError(
+        "out-of-range",
+        `글자 수 제한 초과: 비용 방어선 작동 (${text.length}자 / 최대 ${GOOGLE_TTS_CHAR_LIMIT}자)`
+      );
+    }
+
+    const apiKey = process.env.GOOGLE_TTS_API_KEY;
+    if (!apiKey) {
+      throw new HttpsError("internal", "GOOGLE_TTS_API_KEY가 설정되지 않았습니다.");
+    }
+
+    const voiceName = gender === "MALE" ? GOOGLE_TTS_VOICES.MALE : GOOGLE_TTS_VOICES.FEMALE;
+    console.log(`[generateGoogleAudio] storyId: ${storyId}, episodeId: ${episodeId}, 글자수: ${text.length}, voice: ${voiceName}`);
+
+    // ── Google Cloud TTS API 호출 ─────────────────────────────
+    let audioBuffer;
+    try {
+      const response = await axios.post(
+        `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+        {
+          input: { text },
+          voice: {
+            languageCode: "ko-KR",
+            name: voiceName,
+          },
+          audioConfig: {
+            audioEncoding: "MP3",
+            speakingRate: 1.0,
+            pitch: 0,
+          },
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+          timeout: 60000,
+        }
+      );
+
+      const b64Audio = response.data?.audioContent;
+      if (!b64Audio) {
+        throw new HttpsError("internal", "Google TTS 응답에 audioContent가 없습니다.");
+      }
+
+      audioBuffer = Buffer.from(b64Audio, "base64");
+      console.log(`[generateGoogleAudio] TTS 응답 완료, 크기: ${audioBuffer.length} bytes`);
+    } catch (axiosErr) {
+      if (axiosErr instanceof HttpsError) throw axiosErr;
+      const status = axiosErr.response?.status;
+      const errMsg = axiosErr.response?.data?.error?.message ?? axiosErr.message ?? "알 수 없는 오류";
+      console.error("[generateGoogleAudio] Google TTS API 오류:", status, errMsg);
+      throw new HttpsError("internal", `Google TTS 실패 (${status ?? "네트워크 오류"}): ${errMsg}`);
+    }
+
+    // ── Firebase Storage 업로드 ───────────────────────────────
+    const storagePath = `stories/${storyId}/episodes/${episodeId}/audio.mp3`;
+    const bucket = admin.storage().bucket();
+    const file = bucket.file(storagePath);
+
+    await file.save(audioBuffer, { contentType: "audio/mpeg" });
+    const [audioUrl] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 10 * 365 * 24 * 60 * 60 * 1000, // 10년
+    });
+    console.log("[generateGoogleAudio] Storage 업로드 완료:", storagePath);
+
+    // ── Firestore audioUrl 업데이트 ───────────────────────────
+    await adminDb
+      .collection("stories").doc(storyId)
+      .collection("episodes").doc(episodeId)
+      .set(
+        { audioUrl, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    console.log("[generateGoogleAudio] Firestore 업데이트 완료:", storyId, episodeId);
 
     return { audioUrl };
   }
